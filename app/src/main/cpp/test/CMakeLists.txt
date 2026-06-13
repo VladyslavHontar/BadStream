@@ -14,7 +14,8 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../core core_build)
 enable_testing()
 add_executable(core_tests
         test_smoke.cpp
-        test_byte_writer.cpp)
+        test_byte_writer.cpp
+        test_amf0.cpp)
 target_link_libraries(core_tests PRIVATE plohoystream_core GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(core_tests)
