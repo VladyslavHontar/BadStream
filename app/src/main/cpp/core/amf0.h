@@ -19,6 +19,7 @@ public:
     Amf0Reader(const uint8_t* p, size_t n) : p_(p), n_(n), i_(0) {}
     std::string ReadString();   // expects 0x02 marker
     double ReadNumber();        // expects 0x00 marker
+    void SkipValue();
     bool eof() const { return i_ >= n_; }
 private:
     const uint8_t* p_; size_t n_; size_t i_;

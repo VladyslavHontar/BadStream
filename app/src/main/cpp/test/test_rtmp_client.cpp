@@ -1,6 +1,8 @@
 #include "rtmp_client.h"
 #include "stub_transport.h"
 #include "test_helpers.h"
+#include "rtmp_chunk.h"
+#include "amf0.h"
 using namespace ps;
 TEST(RtmpClient, ConnectCommandObject) {
     StreamParams p; p.app = "live"; p.tcUrl = "rtmp://h/live"; p.streamKey = "key";
@@ -19,4 +21,83 @@ TEST(RtmpClient, ConnectCommandObject) {
     EXPECT_NE(s.find("live"), std::string::npos);
     EXPECT_NE(s.find("tcUrl"), std::string::npos);
     EXPECT_NE(s.find("flashVer"), std::string::npos);
+}
+
+static Bytes MakeCommand(const Bytes& body) { return ChunkEncode(3, 0x14, 0, 0, body, 128); }
+static Bytes MakeResultSuccess() {
+    Bytes b; Amf0::String(b,"_result"); Amf0::Number(b,1); Amf0::Null(b);
+    Amf0::ObjectBegin(b);
+    Amf0::Key(b,"level"); Amf0::String(b,"status");
+    Amf0::Key(b,"code");  Amf0::String(b,"NetConnection.Connect.Success");
+    Amf0::ObjectEnd(b);
+    return MakeCommand(b);
+}
+static Bytes MakeCreateStreamResult(int streamId) {
+    Bytes b; Amf0::String(b,"_result"); Amf0::Number(b,4); Amf0::Null(b); Amf0::Number(b, streamId);
+    return MakeCommand(b);
+}
+static Bytes MakePublishStart() {
+    Bytes b; Amf0::String(b,"onStatus"); Amf0::Number(b,0); Amf0::Null(b);
+    Amf0::ObjectBegin(b);
+    Amf0::Key(b,"level"); Amf0::String(b,"status");
+    Amf0::Key(b,"code");  Amf0::String(b,"NetStream.Publish.Start");
+    Amf0::ObjectEnd(b);
+    return MakeCommand(b);
+}
+TEST(RtmpClient, ReachesPublishing) {
+    StubTransport t;
+    StreamParams p; p.app="live"; p.tcUrl="rtmp://h/live"; p.streamKey="5"; p.host="h";
+    RtmpClient c(t, p);
+    c.Begin();
+    EXPECT_EQ(c.state(), RtmpState::HandshakeSent);
+    ASSERT_GE(t.written().size(), 1537u);
+    EXPECT_EQ(t.written()[0], 0x03);
+
+    Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
+    c.OnBytes(s0s1s2);                          // feed S0S1+S2 -> sends C2 + connect
+    EXPECT_EQ(c.state(), RtmpState::ConnectSent);
+
+    c.OnBytes(MakeResultSuccess());             // connect success -> createStream phase
+    EXPECT_EQ(c.state(), RtmpState::CreateStreamSent);
+
+    c.OnBytes(MakeCreateStreamResult(1));       // stream id 1 -> publish
+    EXPECT_EQ(c.state(), RtmpState::PublishSent);
+    EXPECT_EQ(c.streamId(), 1);
+
+    c.OnBytes(MakePublishStart());              // publish start -> Publishing
+    EXPECT_EQ(c.state(), RtmpState::Publishing);
+}
+static Bytes MakeError() {
+    Bytes b; Amf0::String(b,"_error"); Amf0::Number(b,1); Amf0::Null(b);
+    Amf0::ObjectBegin(b);
+    Amf0::Key(b,"level"); Amf0::String(b,"error");
+    Amf0::Key(b,"code");  Amf0::String(b,"NetConnection.Connect.Rejected");
+    Amf0::ObjectEnd(b);
+    return MakeCommand(b);
+}
+TEST(RtmpClient, ConnectRejectGoesToError) {
+    StubTransport t;
+    StreamParams p; p.app="live"; p.tcUrl="rtmp://h/live"; p.streamKey="5";
+    RtmpClient c(t, p);
+    c.Begin();
+    Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
+    c.OnBytes(s0s1s2);                       // -> ConnectSent
+    c.OnBytes(MakeError());                   // server rejects connect
+    EXPECT_EQ(c.state(), RtmpState::Error);
+}
+TEST(RtmpClient, StrayResultBeforeCreateStreamIgnored) {
+    StubTransport t;
+    StreamParams p; p.app="live"; p.tcUrl="rtmp://h/live"; p.streamKey="5";
+    RtmpClient c(t, p);
+    c.Begin();
+    Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
+    c.OnBytes(s0s1s2);
+    c.OnBytes(MakeResultSuccess());           // -> CreateStreamSent
+    // a stray _result with txn=2 (releaseStream ack) must NOT trigger publish
+    { Bytes b; Amf0::String(b,"_result"); Amf0::Number(b,2); Amf0::Null(b); Amf0::Number(b,0);
+      c.OnBytes(MakeCommand(b)); }
+    EXPECT_EQ(c.state(), RtmpState::CreateStreamSent);   // still waiting for txn=4
+    c.OnBytes(MakeCreateStreamResult(1));     // the real createStream result
+    EXPECT_EQ(c.state(), RtmpState::PublishSent);
+    EXPECT_EQ(c.streamId(), 1);
 }

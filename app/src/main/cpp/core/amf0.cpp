@@ -25,11 +25,24 @@ double Amf0Reader::ReadNumber() {
     uint64_t bits = 0; for (int k = 0; k < 8; ++k) bits = (bits << 8) | p_[i_++];
     double d; std::memcpy(&d, &bits, 8); return d;
 }
-// Scan an AMF0 object body for `key` whose value is a string. Minimal: handles
+void Amf0Reader::SkipValue() {
+    if (i_ >= n_) return;
+    uint8_t m = p_[i_++];
+    if (m == 0x00) { i_ = (i_ + 8 <= n_) ? i_ + 8 : n_; }            // number
+    else if (m == 0x01) { i_ = (i_ + 1 <= n_) ? i_ + 1 : n_; }       // bool
+    else if (m == 0x02) { uint16_t l = u16(); i_ = (i_ + l <= n_) ? i_ + l : n_; } // string
+    else if (m == 0x05 || m == 0x06) { /* null/undefined: marker only */ }
+    else { i_ = n_; }                                                 // object/other: stop
+}
+// Scan an AMF0 payload for `key` whose value is a string. Finds the first object
+// (0x03 marker) in the payload, then scans its key-value pairs. Handles
 // string/number/bool/null values so it can skip past them to find the wanted key.
 std::string Amf0::FindStringValue(const Bytes& obj, const std::string& key) {
     size_t i = 0, n = obj.size();
-    if (i < n && obj[i] == 0x03) ++i;            // skip object marker if present
+    // Scan forward to find a 0x03 object marker
+    while (i < n && obj[i] != 0x03) ++i;
+    if (i >= n) return {};
+    ++i;                                          // skip the 0x03 marker
     while (i + 2 <= n) {
         uint16_t klen = (obj[i] << 8) | obj[i+1]; i += 2;
         if (klen == 0) break;                     // object end
@@ -43,8 +56,8 @@ std::string Amf0::FindStringValue(const Bytes& obj, const std::string& key) {
             if (i + vlen > n) break;
             std::string v((const char*)&obj[i], vlen); i += vlen;
             if (k == key) return v;
-        } else if (marker == 0x00) { i += 8; }    // number
-        else if (marker == 0x01) { i += 1; }      // bool
+        } else if (marker == 0x00) { if (i + 8 > n) break; i += 8; }  // number
+        else if (marker == 0x01) { if (i + 1 > n) break; i += 1; }    // bool
         else if (marker == 0x05) { /* null */ }
         else break;                                // unknown -> stop
     }
