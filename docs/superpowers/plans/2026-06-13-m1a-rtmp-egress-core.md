@@ -656,9 +656,9 @@ TEST(Chunk, FragmentsAtChunkSize) {
 TEST(Chunk, ExtendedTimestamp) {
     Bytes out = ChunkEncode(4, 0x08, 1, 0x1000000, {0x01}, 128);
     EXPECT_EQ(out[1], 0xFF); EXPECT_EQ(out[2], 0xFF); EXPECT_EQ(out[3], 0xFF); // marker
-    // ext ts (4 BE) sits right after the 11-byte type0 header
-    EXPECT_EQ(out[11], 0x01); EXPECT_EQ(out[12], 0x00);
-    EXPECT_EQ(out[13], 0x00); EXPECT_EQ(out[14], 0x00);
+    // ext ts (4 BE) sits after the 1-byte basic header + 11-byte type0 header = index 12
+    EXPECT_EQ(out[12], 0x01); EXPECT_EQ(out[13], 0x00);
+    EXPECT_EQ(out[14], 0x00); EXPECT_EQ(out[15], 0x00);
 }
 ```
 
