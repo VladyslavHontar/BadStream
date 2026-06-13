@@ -1,4 +1,5 @@
 #include "flv.h"
+#include "amf0.h"
 #include <vector>
 #include <utility>
 namespace ps {
@@ -86,5 +87,19 @@ Bytes FlvAudioSeqHeader(const Bytes& asc) {
 }
 Bytes FlvAudioFrame(const Bytes& aacRaw) {
     Bytes b; PutU8(b, 0xAF); PutU8(b, 0x01); PutBytes(b, aacRaw.data(), aacRaw.size()); return b;
+}
+Bytes BuildOnMetaData(int w, int h, double fps, int sampleRate) {
+    Bytes b;
+    Amf0::String(b, "@setDataFrame");
+    Amf0::String(b, "onMetaData");
+    Amf0::EcmaArrayBegin(b, 6);
+    Amf0::Key(b, "width");           Amf0::Number(b, w);
+    Amf0::Key(b, "height");          Amf0::Number(b, h);
+    Amf0::Key(b, "framerate");       Amf0::Number(b, fps);
+    Amf0::Key(b, "videocodecid");    Amf0::Number(b, 7);   // AVC
+    Amf0::Key(b, "audiocodecid");    Amf0::Number(b, 10);  // AAC
+    Amf0::Key(b, "audiosamplerate"); Amf0::Number(b, sampleRate);
+    Amf0::ObjectEnd(b);
+    return b;
 }
 }

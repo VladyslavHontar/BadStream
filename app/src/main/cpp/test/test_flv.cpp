@@ -45,3 +45,18 @@ TEST(Flv, AudioRaw) {
     Bytes aac = {0xDE,0xAD,0xBE,0xEF};
     EXPECT_BYTES(FlvAudioFrame(aac), {0xAF, 0x01, 0xDE,0xAD,0xBE,0xEF});
 }
+TEST(Flv, OnMetaDataShape) {
+    Bytes m = BuildOnMetaData(1280, 720, 30.0, 44100);
+    // starts with AMF0 string "@setDataFrame"
+    EXPECT_EQ(m[0], 0x02); EXPECT_EQ(m[1], 0x00); EXPECT_EQ(m[2], 13);
+    EXPECT_EQ(std::string((char*)&m[3], 13), "@setDataFrame");
+    // contains "onMetaData" and "videocodecid"
+    std::string s((char*)m.data(), m.size());
+    EXPECT_NE(s.find("onMetaData"), std::string::npos);
+    EXPECT_NE(s.find("videocodecid"), std::string::npos);
+    // ends with object-end 00 00 09
+    ASSERT_GE(m.size(), 3u);
+    EXPECT_EQ(m[m.size()-1], 0x09);
+    EXPECT_EQ(m[m.size()-2], 0x00);
+    EXPECT_EQ(m[m.size()-3], 0x00);
+}

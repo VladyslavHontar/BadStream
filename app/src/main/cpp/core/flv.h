@@ -9,4 +9,5 @@ Bytes FlvVideoSeqHeader(const Bytes& avcc);
 Bytes FlvVideoFrame(const Bytes& avccNals, bool keyframe, uint32_t compositionTimeMs);
 Bytes FlvAudioSeqHeader(const Bytes& asc);
 Bytes FlvAudioFrame(const Bytes& aacRaw);
+Bytes BuildOnMetaData(int w, int h, double fps, int sampleRate);
 }
