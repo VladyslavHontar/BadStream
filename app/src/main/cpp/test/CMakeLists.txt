@@ -16,7 +16,8 @@ add_executable(core_tests
         test_smoke.cpp
         test_byte_writer.cpp
         test_amf0.cpp
-        test_transport.cpp)
+        test_transport.cpp
+        test_rtmp_handshake.cpp)
 target_link_libraries(core_tests PRIVATE plohoystream_core GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(core_tests)
