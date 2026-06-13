@@ -135,3 +135,46 @@ TEST(RtmpClient, SendAudioRawEmitsTaggedChunk) {
     EXPECT_EQ(w[7], 0x08);               // message type audio
     EXPECT_EQ(w[12], 0xAF); EXPECT_EQ(w[13], 0x01); // AAC raw
 }
+// Real servers (ffmpeg/nginx/Twitch) send a second control message on the same csid as a
+// fmt1 chunk. The reader must not desync on it and must still surface the later _result.
+TEST(RtmpReader, HandlesFmt1OnSameCsid) {
+    RtmpReader r;
+    // fmt0 Window Ack Size (csid 2, type 5, len 4)
+    r.Feed(ChunkEncode(2, 0x05, 0, 0, {0x00,0x26,0x25,0xa0}, 128));
+    // fmt1 Set Peer Bandwidth (csid 2, type 6, len 5) -- hand-built fmt1 chunk
+    r.Feed(Bytes{0x42, 0x00,0x00,0x00, 0x00,0x00,0x05, 0x06, 0x00,0x26,0x25,0xa0,0x02});
+    // fmt0 _result command (csid 3, type 0x14)
+    { Bytes body; Amf0::String(body,"_result"); Amf0::Number(body,1); Amf0::Null(body);
+      r.Feed(ChunkEncode(3, 0x14, 0, 0, body, 128)); }
+    uint8_t type; Bytes payload;
+    ASSERT_TRUE(r.Next(type, payload)); EXPECT_EQ(type, 0x05);
+    ASSERT_TRUE(r.Next(type, payload)); EXPECT_EQ(type, 0x06);
+    ASSERT_TRUE(r.Next(type, payload)); EXPECT_EQ(type, 0x14);   // <- desync would lose this
+    EXPECT_FALSE(r.Next(type, payload));
+}
+// A message larger than the inbound chunk size arrives split across chunks (fmt0 + fmt3);
+// the reader must reassemble the full payload.
+TEST(RtmpReader, ReassemblesMultiChunkMessage) {
+    RtmpReader r;
+    Bytes big(200); for (size_t i = 0; i < big.size(); ++i) big[i] = (uint8_t)(i & 0xFF); // ramp
+    r.Feed(ChunkEncode(4, 0x14, 0, 0, big, 128));   // 128 + 72 split into fmt0 + fmt3
+    uint8_t type; Bytes payload;
+    ASSERT_TRUE(r.Next(type, payload));
+    EXPECT_EQ(type, 0x14);
+    ASSERT_EQ(payload.size(), 200u);
+    EXPECT_EQ(payload, big);   // exact: a leaked continuation-header byte would corrupt the middle
+}
+// Server raises its outbound chunk size via Set Chunk Size; the reader must apply it to
+// subsequent inbound messages.
+TEST(RtmpReader, AppliesInboundSetChunkSize) {
+    RtmpReader r;
+    // Set Chunk Size = 256 (csid 2, type 1)
+    r.Feed(ChunkEncode(2, 0x01, 0, 0, {0x00,0x00,0x01,0x00}, 128));
+    // a 200-byte message now fits in ONE chunk (<=256), so it must parse as a single chunk
+    Bytes msg(200, 0xCD);
+    r.Feed(ChunkEncode(5, 0x14, 0, 0, msg, 256));
+    uint8_t type; Bytes payload;
+    ASSERT_TRUE(r.Next(type, payload)); EXPECT_EQ(type, 0x01);   // set chunk size
+    ASSERT_TRUE(r.Next(type, payload)); EXPECT_EQ(type, 0x14);
+    EXPECT_EQ(payload.size(), 200u);
+}

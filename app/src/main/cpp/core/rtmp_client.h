@@ -1,4 +1,5 @@
 #pragma once
+#include <map>
 #include <string>
 #include <utility>
 #include "byte_writer.h"
@@ -15,13 +16,20 @@ Bytes BuildConnectCommand(const StreamParams& p, int txn);
 
 enum class RtmpState { Idle, HandshakeSent, ConnectSent, CreateStreamSent, PublishSent, Publishing, Error };
 
-// De-frames single-chunk fmt0 RTMP messages (sufficient for setup-phase control/command msgs).
+// Full RTMP chunk de-assembler: handles chunk types fmt 0/1/2/3 with per-csid header
+// inheritance, the inbound chunk size (default 128, updated on Set Chunk Size), extended
+// timestamps, and reassembly of messages split across multiple chunks. Real servers
+// (ffmpeg, nginx-rtmp, Twitch) interleave control messages using fmt1/fmt3, so a fmt0-only
+// reader desyncs against them.
 class RtmpReader {
 public:
     void Feed(const Bytes& d) { buf_.insert(buf_.end(), d.begin(), d.end()); }
     bool Next(uint8_t& msgType, Bytes& payload);   // pops one complete message
 private:
+    struct Chunk { uint32_t len = 0, streamId = 0, ts = 0; uint8_t type = 0; Bytes partial; };
     Bytes buf_; size_t pos_ = 0;
+    uint32_t inChunkSize_ = 128;
+    std::map<uint32_t, Chunk> cs_;   // per-chunk-stream-id state
 };
 
 class RtmpClient {

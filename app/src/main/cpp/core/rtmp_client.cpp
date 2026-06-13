@@ -102,18 +102,51 @@ void RtmpClient::SendAudio(const Bytes& aacRaw, uint32_t ptsMs) {
     Bytes body = FlvAudioFrame(aacRaw);
     t_.Write(ChunkEncode(4, 0x08, streamId_, ptsMs, body, outChunkSize_));
 }
-// Minimal single-chunk fmt0 de-framer (csid 2..63). Skips non-fmt0 bytes (control noise).
+// Full RTMP chunk de-assembler. Parses one chunk per iteration: basic header (fmt + csid),
+// then a 0/4/8/11-byte message header per fmt with per-csid inheritance, optional extended
+// timestamp, and up to inChunkSize_ payload bytes, reassembling messages split across chunks.
+// Returns one complete message per call; partial chunks leave buf_/pos_ untouched until more
+// bytes arrive. All buffer reads are bounds-guarded (network input).
 bool RtmpReader::Next(uint8_t& msgType, Bytes& payload) {
-    while (pos_ + 12 <= buf_.size()) {
-        uint8_t fmt = buf_[pos_] >> 6;
-        if (fmt != 0) { pos_ += 1; continue; }
-        uint32_t len = (buf_[pos_+4] << 16) | (buf_[pos_+5] << 8) | buf_[pos_+6];
-        if (pos_ + 12 + len > buf_.size()) return false;
-        msgType = buf_[pos_+7];
-        payload.assign(buf_.begin() + pos_ + 12, buf_.begin() + pos_ + 12 + len);
-        pos_ += 12 + len;
-        return true;
+    while (true) {
+        size_t p = pos_, n = buf_.size();
+        if (p >= n) return false;
+        // --- basic header ---
+        uint8_t b0 = buf_[p];
+        uint8_t fmt = b0 >> 6;
+        uint32_t csid = b0 & 0x3F;
+        size_t hp = p + 1;
+        if (csid == 0) { if (hp + 1 > n) return false; csid = 64 + buf_[hp]; hp += 1; }
+        else if (csid == 1) { if (hp + 2 > n) return false; csid = 64u + (buf_[hp] << 8) + buf_[hp+1]; hp += 2; }
+        Chunk& ch = cs_[csid];
+        // --- message header (by fmt) ---
+        uint32_t tsField = ch.ts;
+        if (fmt <= 2) { if (hp + 3 > n) return false; tsField = (buf_[hp]<<16)|(buf_[hp+1]<<8)|buf_[hp+2]; hp += 3; }
+        if (fmt <= 1) { if (hp + 4 > n) return false;
+            ch.len = (buf_[hp]<<16)|(buf_[hp+1]<<8)|buf_[hp+2]; ch.type = buf_[hp+3]; hp += 4; }
+        if (fmt == 0) { if (hp + 4 > n) return false;
+            ch.streamId = buf_[hp] | (buf_[hp+1]<<8) | (buf_[hp+2]<<16) | ((uint32_t)buf_[hp+3]<<24); hp += 4; }
+        if (fmt <= 2 && tsField == 0xFFFFFF) { if (hp + 4 > n) return false;   // extended timestamp
+            tsField = (buf_[hp]<<24)|(buf_[hp+1]<<16)|(buf_[hp+2]<<8)|buf_[hp+3]; hp += 4; }
+        ch.ts = tsField;
+        // --- payload for this chunk ---
+        bool startNew = (fmt != 3) || (ch.partial.size() >= ch.len);  // fmt0/1/2 begin a new msg
+        if (startNew) ch.partial.clear();
+        uint32_t remaining = ch.len - (uint32_t)ch.partial.size();
+        uint32_t take = remaining < inChunkSize_ ? remaining : inChunkSize_;
+        if (hp + take > n) return false;                              // wait for the full chunk
+        ch.partial.insert(ch.partial.end(), buf_.begin() + hp, buf_.begin() + hp + take);
+        pos_ = hp + take;                                             // commit consumption
+        if (ch.partial.size() >= ch.len) {                            // message complete
+            msgType = ch.type;
+            payload = ch.partial;
+            ch.partial.clear();
+            if (msgType == 0x01 && payload.size() >= 4)               // Set Chunk Size (inbound)
+                inChunkSize_ = (payload[0]<<24)|(payload[1]<<16)|(payload[2]<<8)|payload[3];
+            if (pos_ > (1u << 16)) { buf_.erase(buf_.begin(), buf_.begin() + pos_); pos_ = 0; }
+            return true;
+        }
+        // message still incomplete: loop to parse the next (continuation) chunk
     }
-    return false;
 }
 }
