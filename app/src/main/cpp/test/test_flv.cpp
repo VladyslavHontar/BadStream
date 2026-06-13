@@ -9,3 +9,6 @@ TEST(Flv, AvcCFromSpsPps) {
                         0x00,0x05, 0x67,0x42,0xC0,0x1F,0xAA,
                         0x01, 0x00,0x04, 0x68,0xCE,0x3C,0x80});
 }
+TEST(Flv, Asc44kStereo) { EXPECT_BYTES(BuildAsc(44100, 2), {0x12, 0x10}); }
+TEST(Flv, Asc48kStereo) { EXPECT_BYTES(BuildAsc(48000, 2), {0x11, 0x90}); }
+TEST(Flv, Asc44kMono)   { EXPECT_BYTES(BuildAsc(44100, 1), {0x12, 0x08}); }

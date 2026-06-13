@@ -14,4 +14,18 @@ Bytes BuildAvcC(const Bytes& sps, const Bytes& pps) {
     PutU16BE(b, (uint16_t)pps.size()); PutBytes(b, pps.data(), pps.size());
     return b;
 }
+static int FreqIndex(int sr) {
+    switch (sr) { case 96000: return 0; case 88200: return 1; case 64000: return 2;
+        case 48000: return 3; case 44100: return 4; case 32000: return 5;
+        case 24000: return 6; case 22050: return 7; case 16000: return 8;
+        case 12000: return 9; case 11025: return 10; case 8000: return 11; default: return 4; }
+}
+Bytes BuildAsc(int sampleRate, int channels) {
+    int objectType = 2;                         // AAC-LC
+    int f = FreqIndex(sampleRate);
+    Bytes b;
+    PutU8(b, (uint8_t)((objectType << 3) | (f >> 1)));
+    PutU8(b, (uint8_t)(((f & 1) << 7) | (channels << 3)));
+    return b;
+}
 }
