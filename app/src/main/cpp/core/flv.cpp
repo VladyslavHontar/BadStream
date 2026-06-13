@@ -81,4 +81,10 @@ Bytes FlvVideoFrame(const Bytes& avccNals, bool keyframe, uint32_t cts) {
     Bytes b; PutU8(b, keyframe ? 0x17 : 0x27); PutU8(b, 0x01); PutU24BE(b, cts);
     PutBytes(b, avccNals.data(), avccNals.size()); return b;
 }
+Bytes FlvAudioSeqHeader(const Bytes& asc) {
+    Bytes b; PutU8(b, 0xAF); PutU8(b, 0x00); PutBytes(b, asc.data(), asc.size()); return b;
+}
+Bytes FlvAudioFrame(const Bytes& aacRaw) {
+    Bytes b; PutU8(b, 0xAF); PutU8(b, 0x01); PutBytes(b, aacRaw.data(), aacRaw.size()); return b;
+}
 }

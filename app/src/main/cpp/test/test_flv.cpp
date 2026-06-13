@@ -37,3 +37,11 @@ TEST(Flv, VideoInterFrameCts) {
     EXPECT_BYTES(FlvVideoFrame(avccNals, false, /*cts*/40),
         {0x27, 0x01, 0x00,0x00,0x28, 0,0,0,1, 0x41});
 }
+TEST(Flv, AudioSeqHeader) {
+    Bytes asc = {0x12,0x10};
+    EXPECT_BYTES(FlvAudioSeqHeader(asc), {0xAF, 0x00, 0x12, 0x10});
+}
+TEST(Flv, AudioRaw) {
+    Bytes aac = {0xDE,0xAD,0xBE,0xEF};
+    EXPECT_BYTES(FlvAudioFrame(aac), {0xAF, 0x01, 0xDE,0xAD,0xBE,0xEF});
+}

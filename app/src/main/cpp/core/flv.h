@@ -7,4 +7,6 @@ Bytes AnnexBToAvcc(const Bytes& annexb);
 void  SplitSpsPps(const Bytes& cfg, Bytes& sps, Bytes& pps);
 Bytes FlvVideoSeqHeader(const Bytes& avcc);
 Bytes FlvVideoFrame(const Bytes& avccNals, bool keyframe, uint32_t compositionTimeMs);
+Bytes FlvAudioSeqHeader(const Bytes& asc);
+Bytes FlvAudioFrame(const Bytes& aacRaw);
 }
