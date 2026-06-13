@@ -13,3 +13,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+app/src/main/cpp/build-test/
+app/src/main/cpp/build-harness/
