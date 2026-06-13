@@ -1,5 +1,50 @@
 #include "flv.h"
+#include <vector>
+#include <utility>
 namespace ps {
+// Find start-code positions (3- or 4-byte). Returns NAL byte ranges [start,end).
+static std::vector<std::pair<size_t,size_t>> FindNals(const Bytes& d) {
+    std::vector<size_t> starts; size_t i = 0, n = d.size();
+    while (i + 3 <= n) {
+        bool sc4 = (i + 4 <= n && d[i]==0 && d[i+1]==0 && d[i+2]==0 && d[i+3]==1);
+        bool sc3 = (d[i]==0 && d[i+1]==0 && d[i+2]==1);
+        if (sc4) { starts.push_back(i + 4); i += 4; }
+        else if (sc3) { starts.push_back(i + 3); i += 3; }
+        else ++i;
+    }
+    std::vector<std::pair<size_t,size_t>> nals;
+    for (size_t k = 0; k < starts.size(); ++k) {
+        size_t s = starts[k];
+        size_t e = (k + 1 < starts.size()) ? starts[k+1] : n;
+        // back up over the next NAL's start code (3 or 4 bytes).
+        // NOTE: heuristic — a NAL whose data ends in 0x00,0x00 right before a 3-byte
+        // start code may have one trailing data byte mis-trimmed. Safe for MediaCodec
+        // output (M1); revisit before feeding arbitrary bitstreams (e.g. M5 feed-in).
+        if (k + 1 < starts.size()) {
+            bool sc4 = (e >= 4 && d[e-1]==1 && d[e-2]==0 && d[e-3]==0 && d[e-4]==0);
+            e -= sc4 ? 4 : 3;
+        }
+        nals.push_back({s, e});
+    }
+    return nals;
+}
+Bytes AnnexBToAvcc(const Bytes& annexb) {
+    Bytes out;
+    for (auto& r : FindNals(annexb)) {
+        size_t s = r.first, e = r.second;
+        PutU32BE(out, (uint32_t)(e - s));
+        PutBytes(out, annexb.data() + s, e - s);
+    }
+    return out;
+}
+void SplitSpsPps(const Bytes& cfg, Bytes& sps, Bytes& pps) {
+    for (auto& r : FindNals(cfg)) {
+        size_t s = r.first, e = r.second;
+        uint8_t type = cfg[s] & 0x1F;
+        Bytes nal(cfg.begin() + s, cfg.begin() + e);
+        if (type == 7) sps = nal; else if (type == 8) pps = nal;
+    }
+}
 Bytes BuildAvcC(const Bytes& sps, const Bytes& pps) {
     if (sps.size() < 4) return {};   // a real SPS is well over 4 bytes; guard codec/network input
     Bytes b;
