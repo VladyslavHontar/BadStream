@@ -1,34 +1,31 @@
 package com.example.plohoystream
 
-import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
-import android.widget.TextView
-import com.example.plohoystream.databinding.ActivityMainBinding
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.material3.MaterialTheme
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.plohoystream.stream.FakeStreamEngine
+import com.example.plohoystream.stream.StreamEngine
+import com.example.plohoystream.stream.StreamViewModel
+import com.example.plohoystream.ui.StreamScreen
 
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var binding: ActivityMainBinding
-
+class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-
-        // Example of a call to a native method
-        binding.sampleText.text = stringFromJNI()
-    }
-
-    /**
-     * A native method that is implemented by the 'plohoystream' native library,
-     * which is packaged with this application.
-     */
-    external fun stringFromJNI(): String
-
-    companion object {
-        // Used to load the 'plohoystream' library on application startup.
-        init {
-            System.loadLibrary("plohoystream")
+        // M1-B.1: FakeStreamEngine. M1-B.3 replaces this with CameraStreamEngine.
+        val engine: StreamEngine = FakeStreamEngine()
+        setContent {
+            MaterialTheme {
+                val vm: StreamViewModel = viewModel(factory = object : ViewModelProvider.Factory {
+                    @Suppress("UNCHECKED_CAST")
+                    override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                        StreamViewModel(engine) as T
+                })
+                StreamScreen(vm)
+            }
         }
     }
 }
