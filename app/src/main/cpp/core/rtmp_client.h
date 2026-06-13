@@ -31,6 +31,10 @@ public:
     void OnBytes(const Bytes& d);  // advances the state machine
     RtmpState state() const { return state_; }
     int streamId() const { return streamId_; }
+    void SendVideoConfig(const Bytes& sps, const Bytes& pps);
+    void SendVideo(const Bytes& annexb, bool keyframe, uint32_t ptsMs, uint32_t dtsMs);
+    void SendAudioConfig(int sampleRate, int channels);
+    void SendAudio(const Bytes& aacRaw, uint32_t ptsMs);
 private:
     void sendCommand(const Bytes& body, int msgStreamId); // csid 3, type 0x14
     void afterHandshake();

@@ -101,3 +101,37 @@ TEST(RtmpClient, StrayResultBeforeCreateStreamIgnored) {
     EXPECT_EQ(c.state(), RtmpState::PublishSent);
     EXPECT_EQ(c.streamId(), 1);
 }
+
+// Drives the client through handshake+connect+createStream+publish to Publishing (streamId=1).
+static void ForcePublishing(RtmpClient& c) {
+    Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
+    c.Begin();
+    c.OnBytes(s0s1s2);
+    c.OnBytes(MakeResultSuccess());
+    c.OnBytes(MakeCreateStreamResult(1));
+    c.OnBytes(MakePublishStart());
+}
+TEST(RtmpClient, SendVideoConfigEmitsTaggedChunk) {
+    StubTransport t; StreamParams p; p.streamKey="5";
+    RtmpClient c(t, p); ForcePublishing(c);
+    ASSERT_EQ(c.state(), RtmpState::Publishing);
+    t.clear();
+    c.SendVideoConfig({0x67,0x42,0xC0,0x1F,0xAA}, {0x68,0xCE,0x3C,0x80});
+    const Bytes& w = t.written();
+    ASSERT_GE(w.size(), 14u);
+    EXPECT_EQ(w[0] & 0x3F, 5);            // csid 5 (video)
+    EXPECT_EQ(w[7], 0x09);               // message type video
+    EXPECT_EQ(w[12], 0x17);              // FLV: keyframe+AVC
+    EXPECT_EQ(w[13], 0x00);              // AVC seq header
+}
+TEST(RtmpClient, SendAudioRawEmitsTaggedChunk) {
+    StubTransport t; StreamParams p; p.streamKey="5";
+    RtmpClient c(t, p); ForcePublishing(c);
+    t.clear();
+    c.SendAudio({0xDE,0xAD}, /*ptsMs*/40);
+    const Bytes& w = t.written();
+    ASSERT_GE(w.size(), 14u);
+    EXPECT_EQ(w[0] & 0x3F, 4);            // csid 4 (audio)
+    EXPECT_EQ(w[7], 0x08);               // message type audio
+    EXPECT_EQ(w[12], 0xAF); EXPECT_EQ(w[13], 0x01); // AAC raw
+}

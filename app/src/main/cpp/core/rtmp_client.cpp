@@ -85,6 +85,23 @@ void RtmpClient::OnBytes(const Bytes& d) {
         }
     }
 }
+void RtmpClient::SendVideoConfig(const Bytes& sps, const Bytes& pps) {
+    Bytes body = FlvVideoSeqHeader(BuildAvcC(sps, pps));
+    t_.Write(ChunkEncode(5, 0x09, streamId_, 0, body, outChunkSize_));
+}
+void RtmpClient::SendVideo(const Bytes& annexb, bool keyframe, uint32_t ptsMs, uint32_t dtsMs) {
+    uint32_t cts = ptsMs >= dtsMs ? ptsMs - dtsMs : 0;
+    Bytes body = FlvVideoFrame(AnnexBToAvcc(annexb), keyframe, cts);
+    t_.Write(ChunkEncode(5, 0x09, streamId_, dtsMs, body, outChunkSize_));
+}
+void RtmpClient::SendAudioConfig(int sampleRate, int channels) {
+    Bytes body = FlvAudioSeqHeader(BuildAsc(sampleRate, channels));
+    t_.Write(ChunkEncode(4, 0x08, streamId_, 0, body, outChunkSize_));
+}
+void RtmpClient::SendAudio(const Bytes& aacRaw, uint32_t ptsMs) {
+    Bytes body = FlvAudioFrame(aacRaw);
+    t_.Write(ChunkEncode(4, 0x08, streamId_, ptsMs, body, outChunkSize_));
+}
 // Minimal single-chunk fmt0 de-framer (csid 2..63). Skips non-fmt0 bytes (control noise).
 bool RtmpReader::Next(uint8_t& msgType, Bytes& payload) {
     while (pos_ + 12 <= buf_.size()) {
