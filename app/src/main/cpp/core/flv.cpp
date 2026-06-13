@@ -73,4 +73,12 @@ Bytes BuildAsc(int sampleRate, int channels) {
     PutU8(b, (uint8_t)(((f & 1) << 7) | (channels << 3)));
     return b;
 }
+Bytes FlvVideoSeqHeader(const Bytes& avcc) {
+    Bytes b; PutU8(b, 0x17); PutU8(b, 0x00); PutU24BE(b, 0);
+    PutBytes(b, avcc.data(), avcc.size()); return b;
+}
+Bytes FlvVideoFrame(const Bytes& avccNals, bool keyframe, uint32_t cts) {
+    Bytes b; PutU8(b, keyframe ? 0x17 : 0x27); PutU8(b, 0x01); PutU24BE(b, cts);
+    PutBytes(b, avccNals.data(), avccNals.size()); return b;
+}
 }
