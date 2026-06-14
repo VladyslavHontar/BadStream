@@ -71,7 +71,7 @@ Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeStart(JNIEnv*, job
 
 JNIEXPORT jint JNICALL
 Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeState(JNIEnv*, jobject, jlong h) {
-    return h ? static_cast<jint>(Self(h)->state()) : 0; // 0=Idle,1=Connecting,2=Live,3=Error
+    return h ? static_cast<jint>(Self(h)->state()) : 0; // 0=Idle,1=Connecting,2=Live,3=Dropped,4=Rejected
 }
 
 JNIEXPORT void JNICALL

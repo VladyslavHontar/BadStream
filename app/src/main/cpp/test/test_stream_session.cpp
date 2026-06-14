@@ -192,3 +192,76 @@ TEST(StreamSession, BytesSentIncreasesAfterLive) {
     EXPECT_GT(sent, 0u);
     s.Stop();
 }
+
+// A _result whose info object carries level=="error" — a server rejection at connect.
+static Bytes SessMakeConnectError() {
+    Bytes b; Amf0::String(b,"_error"); Amf0::Number(b,1); Amf0::Null(b);
+    Amf0::ObjectBegin(b);
+    Amf0::Key(b,"level"); Amf0::String(b,"error");
+    Amf0::Key(b,"code");  Amf0::String(b,"NetConnection.Connect.Rejected");
+    Amf0::ObjectEnd(b);
+    return SessMakeCommand(b);
+}
+
+TEST(StreamSession, ConnectRejectionEndsRejected) {
+    auto owned = std::make_unique<StubTransport>();
+    StubTransport* stub = owned.get();
+    Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
+    stub->FeedIncoming(s0s1s2);
+    stub->FeedIncoming(SessMakeConnectError());          // server rejects connect
+    StreamParams p; p.host="h"; p.app="app"; p.streamKey="k"; p.tcUrl="rtmp://h/app";
+    auto held = std::make_shared<std::unique_ptr<StubTransport>>(std::move(owned));
+    StreamSession s(p, [held]() mutable -> std::unique_ptr<Transport> { return std::move(*held); });
+    s.Start();
+    for (int i = 0; i < 200 && s.state() == SessionState::Connecting; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    EXPECT_EQ(s.state(), SessionState::Rejected);
+    s.Stop();
+}
+
+TEST(StreamSession, MidPublishWriteFailureEndsDropped) {
+    auto owned = std::make_unique<StubTransport>();
+    StubTransport* stub = owned.get();
+    PreloadPublishHandshake(*stub);
+    StreamParams p; p.host="h"; p.app="app"; p.streamKey="k"; p.tcUrl="rtmp://h/app";
+    auto held = std::make_shared<std::unique_ptr<StubTransport>>(std::move(owned));
+    StreamSession s(p, [held]() mutable -> std::unique_ptr<Transport> { return std::move(*held); });
+    s.Start();
+    for (int i = 0; i < 200 && s.state() != SessionState::Live; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ASSERT_EQ(s.state(), SessionState::Live);
+    stub->SetWriteFails(true);                           // socket goes dead
+    s.SendVideoConfig({0,0,0,1, 0x67,0x42,0x00,0x1e});
+    s.SendVideo({0,0,0,1, 0x65, 0x88}, true, 0, 0);      // this write fails -> Dropped
+    for (int i = 0; i < 200 && s.state() == SessionState::Live; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    EXPECT_EQ(s.state(), SessionState::Dropped);
+    s.Stop();
+}
+
+TEST(StreamSession, GracefulStopWhilePublishingSendsUnpublish) {
+    auto owned = std::make_unique<StubTransport>();
+    StubTransport* stub = owned.get();
+    PreloadPublishHandshake(*stub);
+    std::vector<uint8_t> sink;          // test-owned; outlives the session's transport
+    stub->SetSink(&sink);
+    StreamParams p; p.host="h"; p.app="app"; p.streamKey="streamkey"; p.tcUrl="rtmp://h/app";
+    auto held = std::make_shared<std::unique_ptr<StubTransport>>(std::move(owned));
+    StreamSession s(p, [held]() mutable -> std::unique_ptr<Transport> { return std::move(*held); });
+    s.Start();
+    for (int i = 0; i < 200 && s.state() != SessionState::Live; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ASSERT_EQ(s.state(), SessionState::Live);
+    // The egress thread sends FCUnpublish/deleteStream/closeStream during Stop(), before close.
+    s.Stop();
+    EXPECT_EQ(s.state(), SessionState::Idle);
+    auto contains = [&](const std::string& cmd) {
+        Bytes n = {0x02, (uint8_t)(cmd.size()>>8), (uint8_t)(cmd.size()&0xFF)};
+        n.insert(n.end(), cmd.begin(), cmd.end());
+        for (size_t i = 0; i + n.size() <= sink.size(); ++i)
+            if (std::equal(n.begin(), n.end(), sink.begin()+i)) return true;
+        return false;
+    };
+    EXPECT_TRUE(contains("FCUnpublish"));
+    EXPECT_TRUE(contains("deleteStream"));
+}

@@ -8,7 +8,10 @@
 #include "transport.h"
 namespace ps {
 
-enum class SessionState { Idle, Connecting, Live, Error };
+// Int values cross JNI to Kotlin (nativeState): 0=Idle,1=Connecting,2=Live,3=Dropped,4=Rejected.
+// Dropped = transient transport failure (Kotlin reconnects). Rejected = server refused
+// (auth/bad-key/already-publishing) → terminal.
+enum class SessionState { Idle = 0, Connecting = 1, Live = 2, Dropped = 3, Rejected = 4 };
 
 // Owns a transport + RtmpClient on a dedicated egress thread. Public methods are
 // thread-safe (enqueue onto MediaQueue / atomics). The egress thread runs the proven
