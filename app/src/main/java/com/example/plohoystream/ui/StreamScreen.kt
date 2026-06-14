@@ -45,20 +45,21 @@ import com.example.plohoystream.stream.StreamViewModel
 @Composable
 fun StreamScreen(viewModel: StreamViewModel) {
     val context = LocalContext.current
-    var granted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
+    val perms = remember {
+        arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     }
+    fun hasAll() = perms.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+    var granted by remember { mutableStateOf(hasAll()) }
     val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { result -> granted = result }
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { granted = hasAll() }
 
     if (granted) {
         Viewfinder(viewModel)
     } else {
-        PermissionGate(onRequest = { launcher.launch(Manifest.permission.CAMERA) })
+        PermissionGate(onRequest = { launcher.launch(perms) })
     }
 }
 
@@ -72,7 +73,7 @@ private fun PermissionGate(onRequest: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text("PlohoyStream needs camera access to preview and stream.")
+            Text("PlohoyStream needs camera and microphone access to preview and stream.")
             Button(onClick = onRequest) { Text("Grant camera access") }
         }
     }
@@ -82,6 +83,7 @@ private fun PermissionGate(onRequest: () -> Unit) {
 private fun Viewfinder(viewModel: StreamViewModel) {
     val context = LocalContext.current
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
+    val encoderSurface by viewModel.encoderSurface.collectAsStateWithLifecycle()
 
     val cameras = remember { CameraEnumerator.enumerate(context) }
     val controller = remember { Camera2Controller(context) }
@@ -95,12 +97,12 @@ private fun Viewfinder(viewModel: StreamViewModel) {
 
     DisposableEffect(Unit) { onDispose { controller.stop() } }
 
-    // (Re)start the session whenever the camera config or the surface changes (e.g. a flip).
-    LaunchedEffect(config, surface) {
+    // (Re)start the session when the camera config, preview surface, or encoder surface changes.
+    LaunchedEffect(config, surface, encoderSurface) {
         val c = config
-        val s = surface
-        if (c != null && s != null) {
-            controller.start(c, listOf(s))
+        val preview = surface
+        if (c != null && preview != null) {
+            controller.start(c, listOfNotNull(preview, encoderSurface))
             controller.setZoom(zoom)
         }
     }
