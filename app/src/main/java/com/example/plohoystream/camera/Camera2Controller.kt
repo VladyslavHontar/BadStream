@@ -2,6 +2,7 @@ package com.example.plohoystream.camera
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -18,9 +19,20 @@ import java.util.concurrent.Executor
 /**
  * Camera2 implementation of [CameraController].
  *
- * All camera work runs on a dedicated [HandlerThread]. [start] is idempotent: calling
- * it again (e.g. on a front/back flip) tears down the previous session first, so the
- * viewfinder can just re-issue [start] with a new [CameraConfig].
+ * All camera work runs on a dedicated [HandlerThread]. The device is opened ONCE per
+ * camera id; changing the target surfaces (e.g. adding the encoder on go-live) or flipping
+ * zoom rebuilds only the capture *session* on the already-open device. Switching cameras
+ * (front/back) closes and reopens.
+ *
+ * Two subtleties this guards against, learned from a real-device (Solana Seeker) crash:
+ *  - **No concurrent opens of the same camera.** [start] can be called several times in
+ *    quick succession (the preview SurfaceView re-emits its surface during initial layout).
+ *    A second `openCamera` for a camera that is already open/opening makes the camera
+ *    service disconnect the first client; the first client's [onOpened] then fires on a
+ *    disconnected device and `createCaptureRequest` throws `CAMERA_DISCONNECTED`. We coalesce
+ *    repeat starts and reject stale [onOpened] callbacks by camera id.
+ *  - **Session setup never crashes the app.** A device can be disconnected out from under us
+ *    between open and configure, so all camera calls on the handler thread are guarded.
  *
  * Permission is gated by the UI before [start] is ever called, hence the suppression.
  */
@@ -35,6 +47,8 @@ class Camera2Controller(context: Context) : CameraController {
     private var session: CameraCaptureSession? = null
     private var requestBuilder: CaptureRequest.Builder? = null
     private var targets: List<Surface> = emptyList()
+    private var openedCameraId: String? = null
+    private var opening = false
 
     private var minZoom = 1.0f
     private var maxZoom = 1.0f
@@ -43,17 +57,41 @@ class Camera2Controller(context: Context) : CameraController {
     @SuppressLint("MissingPermission")
     override fun start(config: CameraConfig, targets: List<Surface>) {
         handler.post {
-            closeSession()
             this.targets = targets
             minZoom = config.minZoom
             maxZoom = config.maxZoom
             currentZoom = CameraControls.clampZoom(currentZoom, minZoom, maxZoom)
-            manager.openCamera(config.cameraId, deviceCallback, handler)
+
+            val open = device
+            when {
+                // Same camera already open: just rebuild the session with the new targets.
+                config.cameraId == openedCameraId && open != null -> {
+                    Log.i(TAG, "reconfigure open camera ${config.cameraId} (${targets.size} targets)")
+                    reconfigure(open)
+                }
+                // Open already in flight for this camera: coalesce — onOpened uses latest targets.
+                config.cameraId == openedCameraId && opening -> {
+                    Log.i(TAG, "open in flight for ${config.cameraId}; coalescing (${targets.size} targets)")
+                }
+                // Different camera (or nothing open): close current and (re)open.
+                else -> {
+                    Log.i(TAG, "opening camera ${config.cameraId}")
+                    closeCamera()
+                    openedCameraId = config.cameraId
+                    opening = true
+                    runCatching { manager.openCamera(config.cameraId, deviceCallback, handler) }
+                        .onFailure {
+                            Log.w(TAG, "openCamera failed", it)
+                            opening = false
+                            openedCameraId = null
+                        }
+                }
+            }
         }
     }
 
     override fun stop() {
-        handler.post { closeSession() }
+        handler.post { closeCamera() }
     }
 
     override fun setZoom(ratio: Float) {
@@ -67,72 +105,98 @@ class Camera2Controller(context: Context) : CameraController {
 
     private val deviceCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
+            // Reject a stale open that a newer start() has superseded (different camera id).
+            if (camera.id != openedCameraId) {
+                Log.i(TAG, "ignoring stale onOpened for ${camera.id} (want $openedCameraId)")
+                runCatching { camera.close() }
+                return
+            }
+            opening = false
             device = camera
-            configureSession(camera)
+            reconfigure(camera)
         }
 
         override fun onDisconnected(camera: CameraDevice) {
-            camera.close()
-            if (device === camera) device = null
+            Log.w(TAG, "camera ${camera.id} disconnected")
+            runCatching { camera.close() }
+            resetDeviceState(camera)
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
-            camera.close()
-            if (device === camera) device = null
+            Log.w(TAG, "camera ${camera.id} error $error")
+            runCatching { camera.close() }
+            resetDeviceState(camera)
         }
     }
 
-    private fun configureSession(camera: CameraDevice) {
-        // Only configure surfaces whose producer is still alive. A target can be abandoned
-        // out from under us (e.g. an encoder input surface whose MediaCodec errored), and
-        // building an OutputConfiguration over an abandoned Surface throws — which on the
-        // camera thread would crash the whole app. Drop bad targets and keep previewing.
+    /** (Re)build a capture session for the current [targets] on an already-open [camera]. */
+    private fun reconfigure(camera: CameraDevice) {
+        runCatching { session?.close() }
+        session = null
+        requestBuilder = null
+
         val valid = targets.filter { it.isValid }
-        targets.filterNot { it.isValid }.forEach { Log.w(TAG, "dropping abandoned camera target $it") }
-        if (valid.isEmpty()) return
-        val outputs = try {
-            valid.map { OutputConfiguration(it) }
-        } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "a camera target was abandoned during configuration; skipping", e)
+        targets.filterNot { it.isValid }.forEach { Log.w(TAG, "dropping abandoned target $it") }
+        if (valid.isEmpty()) {
+            Log.w(TAG, "no valid camera targets; skipping configure")
             return
         }
-        val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            valid.forEach { addTarget(it) }
-            set(CaptureRequest.CONTROL_AF_MODE, CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-            set(CaptureRequest.CONTROL_ZOOM_RATIO, currentZoom)
+        try {
+            val outputs = valid.map { OutputConfiguration(it) }
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                valid.forEach { addTarget(it) }
+                set(CaptureRequest.CONTROL_AF_MODE, CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                set(CaptureRequest.CONTROL_ZOOM_RATIO, currentZoom)
+            }
+            requestBuilder = builder
+            val sessionConfig = SessionConfiguration(
+                SessionConfiguration.SESSION_REGULAR,
+                outputs,
+                executor,
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(configured: CameraCaptureSession) {
+                        session = configured
+                        runCatching { configured.setRepeatingRequest(builder.build(), null, handler) }
+                            .onFailure { Log.w(TAG, "setRepeatingRequest failed", it) }
+                    }
+
+                    override fun onConfigureFailed(configured: CameraCaptureSession) {
+                        Log.w(TAG, "camera session configuration failed")
+                    }
+                },
+            )
+            camera.createCaptureSession(sessionConfig)
+        } catch (e: CameraAccessException) {
+            // Device was disconnected between open and configure — reset so a later start() reopens.
+            Log.w(TAG, "configure failed; camera disconnected", e)
+            if (device === camera) device = null
+            openedCameraId = null
+            runCatching { camera.close() }
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "configure failed; illegal state", e)
         }
-        requestBuilder = builder
-
-        val sessionConfig = SessionConfiguration(
-            SessionConfiguration.SESSION_REGULAR,
-            outputs,
-            executor,
-            object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(configured: CameraCaptureSession) {
-                    session = configured
-                    runCatching { configured.setRepeatingRequest(builder.build(), null, handler) }
-                }
-
-                override fun onConfigureFailed(failed: CameraCaptureSession) {
-                    Log.w(TAG, "camera session configuration failed")
-                    // Leave session null; a subsequent start() can retry.
-                }
-            },
-        )
-        runCatching { camera.createCaptureSession(sessionConfig) }
-            .onFailure { Log.w(TAG, "createCaptureSession threw", it) }
     }
 
-    private companion object {
-        const val TAG = "Camera2Controller"
+    private fun resetDeviceState(camera: CameraDevice) {
+        if (device === camera) device = null
+        session = null
+        requestBuilder = null
+        opening = false
+        openedCameraId = null
     }
 
-    private fun closeSession() {
+    private fun closeCamera() {
         runCatching { session?.close() }
         session = null
         requestBuilder = null
         runCatching { device?.close() }
         device = null
+        openedCameraId = null
+        opening = false
         targets = emptyList()
+    }
+
+    private companion object {
+        const val TAG = "Camera2Controller"
     }
 }
