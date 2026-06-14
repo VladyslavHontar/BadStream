@@ -33,17 +33,17 @@ class Camera2Controller(context: Context) : CameraController {
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var requestBuilder: CaptureRequest.Builder? = null
-    private var surface: Surface? = null
+    private var targets: List<Surface> = emptyList()
 
     private var minZoom = 1.0f
     private var maxZoom = 1.0f
     private var currentZoom = 1.0f
 
     @SuppressLint("MissingPermission")
-    override fun start(config: CameraConfig, previewSurface: Surface) {
+    override fun start(config: CameraConfig, targets: List<Surface>) {
         handler.post {
             closeSession()
-            surface = previewSurface
+            this.targets = targets
             minZoom = config.minZoom
             maxZoom = config.maxZoom
             currentZoom = CameraControls.clampZoom(currentZoom, minZoom, maxZoom)
@@ -82,9 +82,10 @@ class Camera2Controller(context: Context) : CameraController {
     }
 
     private fun configureSession(camera: CameraDevice) {
-        val target = surface ?: return
+        val outputs = targets.map { OutputConfiguration(it) }
+        if (outputs.isEmpty()) return
         val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            addTarget(target)
+            targets.forEach { addTarget(it) }
             set(CaptureRequest.CONTROL_AF_MODE, CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
             set(CaptureRequest.CONTROL_ZOOM_RATIO, currentZoom)
         }
@@ -92,7 +93,7 @@ class Camera2Controller(context: Context) : CameraController {
 
         val sessionConfig = SessionConfiguration(
             SessionConfiguration.SESSION_REGULAR,
-            listOf(OutputConfiguration(target)),
+            outputs,
             executor,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(configured: CameraCaptureSession) {
@@ -114,5 +115,6 @@ class Camera2Controller(context: Context) : CameraController {
         requestBuilder = null
         runCatching { device?.close() }
         device = null
+        targets = emptyList()
     }
 }

@@ -100,7 +100,7 @@ private fun Viewfinder(viewModel: StreamViewModel) {
         val c = config
         val s = surface
         if (c != null && s != null) {
-            controller.start(c, s)
+            controller.start(c, listOf(s))
             controller.setZoom(zoom)
         }
     }
