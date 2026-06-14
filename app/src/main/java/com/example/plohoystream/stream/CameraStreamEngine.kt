@@ -50,17 +50,18 @@ class CameraStreamEngine(
         startMedia(s)
 
         pollJob = scope.launch {
-            // Poll native state until it settles on a latching outcome. Each outcome is
-            // terminal for this poll so we never leave an unbounded timed loop re-queuing
-            // (which would otherwise stall a virtual-time test scheduler). A later
-            // disconnect re-arms via a fresh start()/native callback.
+            // Poll native state. Connecting(1) and Live(2) are non-terminal: we keep
+            // polling through Live so a mid-stream native drop (state -> 3) is detected
+            // and surfaced as Error instead of latching the UI on Live forever. Only the
+            // terminal states Error(3) and Idle(0) break the loop. stop() cancels pollJob.
             while (true) {
                 when (s.state()) {
-                    2 -> { _state.value = StreamState.Live; break }
+                    2 -> _state.value = StreamState.Live          // keep polling so a later drop is seen
                     3 -> { _state.value = StreamState.Error("Stream rejected"); break }
                     0 -> { _state.value = StreamState.Idle; break }
-                    else -> delay(pollIntervalMs) // still Connecting (1): keep polling
+                    // 1 (Connecting) -> keep polling
                 }
+                delay(pollIntervalMs)
             }
         }
     }

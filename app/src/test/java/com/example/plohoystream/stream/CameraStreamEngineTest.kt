@@ -28,6 +28,17 @@ class CameraStreamEngineTest {
         streamer.emitState(2) // Live
         advanceTimeBy(150); runCurrent()
         assertEquals(StreamState.Live, e.state.value)
+        e.stop()
+    }
+
+    @Test fun liveThenNativeDrop_surfacesAsError() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer)
+        e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        assertEquals(StreamState.Live, e.state.value)
+        streamer.emitState(3); advanceTimeBy(150); runCurrent()
+        assertTrue(e.state.value is StreamState.Error)
     }
 
     @Test fun start_withBadUrl_goesToError() = runTest {
