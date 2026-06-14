@@ -25,7 +25,7 @@ fun AboutSettings(viewModel: StreamViewModel) {
                 onClick = {
                     viewModel.setQuality(VideoQuality.Default)
                     viewModel.setCodecOverride(CodecOverride.Auto)
-                    if (ui.hdrEnabled) viewModel.setHdr(false)
+                    if (ui.settings.hdrEnabled) viewModel.setHdr(false)
                 },
                 enabled = !ui.isActive,
             ) { Text("Reset to defaults") }

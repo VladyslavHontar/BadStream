@@ -1,6 +1,9 @@
 package com.example.plohoystream.stream
 
+import kotlinx.serialization.Serializable
+
 /** Encoder/egress quality applied at go-live (no mid-stream reconfig). */
+@Serializable
 data class VideoQuality(
     val width: Int = 1920,
     val height: Int = 1080,

@@ -1,6 +1,9 @@
 package com.example.plohoystream.stream
 
+import kotlinx.serialization.Serializable
+
 /** User codec preference. Auto = today's negotiation; the others force a codec (SDR). */
+@Serializable
 enum class CodecOverride { Auto, ForceHevc, ForceAvc }
 
 /**

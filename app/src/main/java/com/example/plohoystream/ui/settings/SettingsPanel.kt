@@ -104,9 +104,9 @@ fun SettingsPanel(viewModel: StreamViewModel, modifier: Modifier = Modifier) {
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        NavRow("Destination", ui.url.ifBlank { "Not set" }) { viewModel.navigateSettings(SettingsRoute.Destination) }
-                        NavRow("Video", "${ui.quality.height}p ${ui.quality.fps}") { viewModel.navigateSettings(SettingsRoute.Video) }
-                        NavRow("Audio", "${ui.quality.audioBitrate / 1000} kbps") { viewModel.navigateSettings(SettingsRoute.Audio) }
+                        NavRow("Destination", ui.settings.rtmpUrl.ifBlank { "Not set" }) { viewModel.navigateSettings(SettingsRoute.Destination) }
+                        NavRow("Video", "${ui.settings.quality.height}p ${ui.settings.quality.fps}") { viewModel.navigateSettings(SettingsRoute.Video) }
+                        NavRow("Audio", "${ui.settings.quality.audioBitrate / 1000} kbps") { viewModel.navigateSettings(SettingsRoute.Audio) }
                         NavRow("Camera", "") { viewModel.navigateSettings(SettingsRoute.Camera) }
                         NavRow("About & Reset", "") { viewModel.navigateSettings(SettingsRoute.About) }
                     }

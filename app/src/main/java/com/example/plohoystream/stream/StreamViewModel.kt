@@ -3,6 +3,7 @@ package com.example.plohoystream.stream
 import android.view.Surface
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.plohoystream.data.SettingsStore
 import com.example.plohoystream.ui.settings.SettingsRoute
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,8 @@ import kotlinx.coroutines.launch
 class StreamViewModel(
     private val engine: StreamEngine,
     hdrAvailable: Boolean = false,
+    // Persistence seam — NOT defaulted so it can never be forgotten at the call site.
+    private val store: SettingsStore,
     // Real-time clock for the 1s elapsed ticker. Kept off the (virtual) Main test dispatcher so
     // unit tests calling advanceUntilIdle() don't chase this perpetually-rescheduling loop forever.
     private val tickerDispatcher: CoroutineDispatcher = Dispatchers.Default,
@@ -33,6 +36,10 @@ class StreamViewModel(
     @Volatile private var liveStartMs: Long = 0L
 
     init {
+        // Seed UI state from persisted settings and keep it in sync.
+        viewModelScope.launch {
+            store.data.collect { s -> _uiState.update { it.copy(settings = s) } }
+        }
         viewModelScope.launch {
             engine.state.collect { s ->
                 if (s is StreamState.Live && liveStartMs == 0L) liveStartMs = System.currentTimeMillis()
@@ -56,11 +63,17 @@ class StreamViewModel(
         }
     }
 
-    fun setUrl(value: String) = _uiState.update { it.copy(url = value) }
-    fun setKey(value: String) = _uiState.update { it.copy(key = value) }
-    fun setHdr(on: Boolean) = _uiState.update { it.copy(hdrEnabled = on) }
-    fun setQuality(q: VideoQuality) = _uiState.update { it.copy(quality = q) }
-    fun setCodecOverride(c: CodecOverride) = _uiState.update { it.copy(codecOverride = c) }
+    /** Single write path: applies the transform optimistically to UI state AND persists it. */
+    private fun mutate(transform: (Settings) -> Settings) {
+        _uiState.update { it.copy(settings = transform(it.settings)) }
+        viewModelScope.launch { store.update(transform) }
+    }
+
+    fun setUrl(value: String) = mutate { it.copy(rtmpUrl = value) }
+    fun setKey(value: String) = mutate { it.copy(streamKey = value) }
+    fun setHdr(on: Boolean) = mutate { it.copy(hdrEnabled = on) }
+    fun setQuality(q: VideoQuality) = mutate { it.copy(quality = q) }
+    fun setCodecOverride(c: CodecOverride) = mutate { it.copy(codecOverride = c) }
 
     fun openSettings() = _uiState.update { it.copy(panelOpen = true, settingsRoute = SettingsRoute.Root) }
     fun closeSettings() = _uiState.update { it.copy(panelOpen = false, settingsRoute = SettingsRoute.Root) }
@@ -70,13 +83,14 @@ class StreamViewModel(
         val s = _uiState.value
         if (!s.canGoLive) return
         _uiState.update { it.copy(stream = StreamState.Connecting) }   // optimistic: closes double-tap window
+        val cfg = s.settings
         engine.start(
             StreamConfig(
-                rtmpUrl = s.url,
-                streamKey = s.key,
-                hdrEnabled = s.hdrEnabled,
-                quality = s.quality,
-                codecOverride = s.codecOverride,
+                rtmpUrl = cfg.rtmpUrl,
+                streamKey = cfg.streamKey,
+                hdrEnabled = cfg.hdrEnabled,
+                quality = cfg.quality,
+                codecOverride = cfg.codecOverride,
             ),
         )
     }

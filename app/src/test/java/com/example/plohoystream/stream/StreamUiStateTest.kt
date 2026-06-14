@@ -7,11 +7,11 @@ import org.junit.Test
 
 class StreamUiStateTest {
     @Test fun canGoLive_requiresUrlKeyAndIdleOrError() {
-        assertFalse(StreamUiState("", "", StreamState.Idle).canGoLive)         // no url/key
-        assertFalse(StreamUiState("rtmp://h/app", "", StreamState.Idle).canGoLive) // no key
-        assertTrue(StreamUiState("rtmp://h/app", "k", StreamState.Idle).canGoLive)
-        assertTrue(StreamUiState("rtmp://h/app", "k", StreamState.Error("x")).canGoLive)
-        assertFalse(StreamUiState("rtmp://h/app", "k", StreamState.Live).canGoLive) // already live
+        assertFalse(StreamUiState(Settings(), StreamState.Idle).canGoLive)         // no url/key
+        assertFalse(StreamUiState(Settings(rtmpUrl = "rtmp://h/app"), StreamState.Idle).canGoLive) // no key
+        assertTrue(StreamUiState(Settings(rtmpUrl = "rtmp://h/app", streamKey = "k"), StreamState.Idle).canGoLive)
+        assertTrue(StreamUiState(Settings(rtmpUrl = "rtmp://h/app", streamKey = "k"), StreamState.Error("x")).canGoLive)
+        assertFalse(StreamUiState(Settings(rtmpUrl = "rtmp://h/app", streamKey = "k"), StreamState.Live).canGoLive) // already live
     }
     @Test fun isActive_trueWhileConnectingLiveStopping() {
         assertTrue(StreamUiState(stream = StreamState.Connecting).isActive)

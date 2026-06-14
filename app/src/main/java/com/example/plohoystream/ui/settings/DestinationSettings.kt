@@ -24,14 +24,14 @@ fun DestinationSettings(viewModel: StreamViewModel) {
         DimmedWhileLiveBanner(visible = ui.isActive)
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
-                value = ui.url, onValueChange = viewModel::setUrl,
+                value = ui.settings.rtmpUrl, onValueChange = viewModel::setUrl,
                 label = { Text("Server URL") }, singleLine = true, enabled = !ui.isActive,
                 placeholder = { Text("rtmp://live.example.com/app") },
                 modifier = Modifier.fillMaxWidth(),
             )
             Text("Example: rtmp://live.twitch.tv/app", color = OnSurfaceMuted, style = MaterialTheme.typography.labelMedium)
             OutlinedTextField(
-                value = ui.key, onValueChange = viewModel::setKey,
+                value = ui.settings.streamKey, onValueChange = viewModel::setKey,
                 label = { Text("Stream key") }, singleLine = true, enabled = !ui.isActive,
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),

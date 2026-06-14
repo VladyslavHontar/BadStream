@@ -32,7 +32,7 @@ fun VideoSettings(viewModel: StreamViewModel) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 VideoQuality.Presets.forEach { q ->
                     FilterChip(
-                        selected = ui.quality.height == q.height && ui.quality.fps == q.fps,
+                        selected = ui.settings.quality.height == q.height && ui.settings.quality.fps == q.fps,
                         onClick = { if (!ui.isActive) viewModel.setQuality(q) },
                         enabled = !ui.isActive,
                         label = { Text("${q.height}p ${q.fps}") },
@@ -43,14 +43,14 @@ fun VideoSettings(viewModel: StreamViewModel) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(CodecOverride.Auto to "Auto", CodecOverride.ForceHevc to "HEVC", CodecOverride.ForceAvc to "AVC").forEach { (c, label) ->
                     FilterChip(
-                        selected = ui.codecOverride == c,
+                        selected = ui.settings.codecOverride == c,
                         onClick = { if (!ui.isActive) viewModel.setCodecOverride(c) },
                         enabled = !ui.isActive,
                         label = { Text(label) },
                     )
                 }
             }
-            Text("Video bitrate: ${ui.quality.videoBitrate / 1000} kbps", color = OnSurfaceWhite, style = MaterialTheme.typography.bodyMedium)
+            Text("Video bitrate: ${ui.settings.quality.videoBitrate / 1000} kbps", color = OnSurfaceWhite, style = MaterialTheme.typography.bodyMedium)
             Text(
                 "Auto lets the server negotiate the best codec. HEVC is more efficient but some servers reject it; AVC is the most compatible.",
                 color = OnSurfaceMuted, style = MaterialTheme.typography.labelMedium,

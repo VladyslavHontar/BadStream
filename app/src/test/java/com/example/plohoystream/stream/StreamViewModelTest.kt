@@ -1,6 +1,7 @@
 package com.example.plohoystream.stream
 
 import com.example.plohoystream.MainDispatcherRule
+import com.example.plohoystream.data.FakeSettingsStore
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -16,7 +17,7 @@ class StreamViewModelTest {
 
     @Test fun setUrlKey_thenGoLive_startsEngineWithConfig() = runTest {
         val engine = FakeStreamEngine()
-        val vm = StreamViewModel(engine)
+        val vm = StreamViewModel(engine, store = FakeSettingsStore())
         vm.setUrl("rtmp://h/app"); vm.setKey("k")
         vm.goLive()
         advanceUntilIdle()
@@ -26,7 +27,7 @@ class StreamViewModelTest {
 
     @Test fun goLive_ignoredWhenUrlOrKeyBlank() = runTest {
         val engine = FakeStreamEngine()
-        val vm = StreamViewModel(engine)
+        val vm = StreamViewModel(engine, store = FakeSettingsStore())
         vm.setUrl("rtmp://h/app")   // no key
         vm.goLive()
         advanceUntilIdle()
@@ -36,7 +37,7 @@ class StreamViewModelTest {
 
     @Test fun engineStateChanges_propagateToUiState() = runTest {
         val engine = FakeStreamEngine()
-        val vm = StreamViewModel(engine)
+        val vm = StreamViewModel(engine, store = FakeSettingsStore())
         advanceUntilIdle()
         engine.start(StreamConfig("rtmp://h/app", "k"))
         engine.emitLive()
@@ -47,7 +48,7 @@ class StreamViewModelTest {
 
     @Test fun stop_delegatesToEngine() = runTest {
         val engine = FakeStreamEngine()
-        val vm = StreamViewModel(engine)
+        val vm = StreamViewModel(engine, store = FakeSettingsStore())
         vm.setUrl("rtmp://h/app"); vm.setKey("k"); vm.goLive(); engine.emitLive()
         advanceUntilIdle()
         vm.stop()
@@ -57,7 +58,7 @@ class StreamViewModelTest {
 
     @Test fun setHdr_thenGoLive_passesHdrEnabledInConfig() = runTest {
         val engine = FakeStreamEngine()
-        val vm = StreamViewModel(engine, hdrAvailable = true)
+        val vm = StreamViewModel(engine, hdrAvailable = true, store = FakeSettingsStore())
         vm.setUrl("rtmp://h/app"); vm.setKey("k")
         vm.setHdr(true)
         vm.goLive()
@@ -68,7 +69,7 @@ class StreamViewModelTest {
 
     @Test fun setQualityAndCodec_thenGoLive_buildsRicherConfig() = runTest {
         val engine = FakeStreamEngine()
-        val vm = StreamViewModel(engine)
+        val vm = StreamViewModel(engine, store = FakeSettingsStore())
         vm.setUrl("rtmp://h/app"); vm.setKey("k")
         vm.setQuality(VideoQuality(1280, 720, 30, 3_500_000, 128_000))
         vm.setCodecOverride(CodecOverride.ForceHevc)
@@ -80,8 +81,25 @@ class StreamViewModelTest {
         )
     }
 
+    @Test fun setUrl_thenKey_persistToStore() = runTest {
+        val store = FakeSettingsStore()
+        val vm = StreamViewModel(FakeStreamEngine(), store = store)
+        vm.setUrl("rtmp://h/app"); vm.setKey("k")
+        advanceUntilIdle()
+        assertEquals("rtmp://h/app", store.state.value.rtmpUrl)
+        assertEquals("k", store.state.value.streamKey)
+    }
+
+    @Test fun loadsPersistedSettingsOnInit() = runTest {
+        val store = FakeSettingsStore(Settings(rtmpUrl = "rtmp://saved/app", streamKey = "sk"))
+        val vm = StreamViewModel(FakeStreamEngine(), store = store)
+        advanceUntilIdle()
+        assertEquals("rtmp://saved/app", vm.uiState.value.settings.rtmpUrl)
+        assertEquals("sk", vm.uiState.value.settings.streamKey)
+    }
+
     @Test fun panelOpenClose_andRoute_updateUiState() = runTest {
-        val vm = StreamViewModel(FakeStreamEngine())
+        val vm = StreamViewModel(FakeStreamEngine(), store = FakeSettingsStore())
         vm.openSettings()
         advanceUntilIdle()
         assertTrue(vm.uiState.value.panelOpen)
@@ -93,7 +111,7 @@ class StreamViewModelTest {
 
     @Test fun engineLiveStats_propagateToUiState() = runTest {
         val engine = FakeStreamEngine()
-        val vm = StreamViewModel(engine)
+        val vm = StreamViewModel(engine, store = FakeSettingsStore())
         advanceUntilIdle()
         engine.emitBitrate(5500)
         engine.emitHealth(ConnectionHealth.Warn)

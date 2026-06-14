@@ -11,6 +11,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.plohoystream.camera.CameraEnumerator
+import com.example.plohoystream.data.DataStoreSettingsStore
 import com.example.plohoystream.media.CodecCapabilities
 import com.example.plohoystream.stream.AudioEncoder
 import com.example.plohoystream.stream.CameraStreamEngine
@@ -78,12 +79,13 @@ class MainActivity : ComponentActivity() {
             )
             eng
         }
+        val store = DataStoreSettingsStore(applicationContext)
         setContent {
             PlohoyTheme {
                 val vm: StreamViewModel = viewModel(factory = object : ViewModelProvider.Factory {
                     @Suppress("UNCHECKED_CAST")
                     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                        StreamViewModel(engine, hdrAvailable) as T
+                        StreamViewModel(engine, hdrAvailable, store) as T
                 })
                 StreamScreen(vm)
             }

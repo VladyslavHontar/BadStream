@@ -33,7 +33,7 @@ fun CameraSettings(viewModel: StreamViewModel) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("HDR", color = OnSurfaceWhite, style = MaterialTheme.typography.titleMedium)
-                    Switch(checked = ui.hdrEnabled, onCheckedChange = viewModel::setHdr, enabled = !ui.isActive)
+                    Switch(checked = ui.settings.hdrEnabled, onCheckedChange = viewModel::setHdr, enabled = !ui.isActive)
                 }
             } else {
                 Text("HDR unavailable on this device", color = OnSurfaceMuted, style = MaterialTheme.typography.bodyMedium)

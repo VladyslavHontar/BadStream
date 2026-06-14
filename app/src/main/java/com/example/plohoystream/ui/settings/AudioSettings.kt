@@ -28,8 +28,8 @@ fun AudioSettings(viewModel: StreamViewModel) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(96_000, 128_000, 192_000).forEach { br ->
                     FilterChip(
-                        selected = ui.quality.audioBitrate == br,
-                        onClick = { if (!ui.isActive) viewModel.setQuality(ui.quality.copy(audioBitrate = br)) },
+                        selected = ui.settings.quality.audioBitrate == br,
+                        onClick = { if (!ui.isActive) viewModel.setQuality(ui.settings.quality.copy(audioBitrate = br)) },
                         enabled = !ui.isActive,
                         label = { Text("${br / 1000} kbps") },
                     )
