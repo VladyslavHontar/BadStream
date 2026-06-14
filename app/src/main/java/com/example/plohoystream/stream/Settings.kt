@@ -15,4 +15,5 @@ data class Settings(
     val quality: VideoQuality = VideoQuality.Default,
     val codecOverride: CodecOverride = CodecOverride.Auto,
     val hdrEnabled: Boolean = false,
+    val recordWhileStreaming: Boolean = false,
 )

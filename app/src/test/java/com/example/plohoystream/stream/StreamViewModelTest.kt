@@ -67,6 +67,16 @@ class StreamViewModelTest {
         assertTrue(vm.uiState.value.hdrAvailable)
     }
 
+    @Test fun setRecordWhileStreaming_thenGoLive_passesFlagInConfig() = runTest {
+        val engine = FakeStreamEngine()
+        val vm = StreamViewModel(engine, store = FakeSettingsStore())
+        vm.setUrl("rtmp://h/app"); vm.setKey("k")
+        vm.setRecordWhileStreaming(true)
+        vm.goLive()
+        advanceUntilIdle()
+        assertEquals(StreamConfig("rtmp://h/app", "k", recordWhileStreaming = true), engine.lastConfig)
+    }
+
     @Test fun setQualityAndCodec_thenGoLive_buildsRicherConfig() = runTest {
         val engine = FakeStreamEngine()
         val vm = StreamViewModel(engine, store = FakeSettingsStore())
