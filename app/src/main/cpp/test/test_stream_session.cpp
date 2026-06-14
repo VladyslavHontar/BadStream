@@ -83,6 +83,9 @@ struct BlockingTransport : ps::Transport {
         cv.wait(lk, [&] { return closed; });
         return 0; // closed -> report EOF
     }
+    int ReadNonBlocking(uint8_t*, int) override {
+        std::lock_guard<std::mutex> lk(m); return closed ? -1 : 0;
+    }
     void Close() override { { std::lock_guard<std::mutex> lk(m); closed = true; } cv.notify_all(); conn = false; }
     bool connected() const override { return conn; }
 };
