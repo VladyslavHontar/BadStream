@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,33 +71,45 @@ fun NavRow(title: String, value: String, onClick: () -> Unit) {
 /** A sub-screen scaffold: back header + content. */
 @Composable
 fun SubScreen(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Back header stays pinned; only the content below scrolls.
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = OnSurfaceWhite) }
             Text(title, color = OnSurfaceWhite, style = MaterialTheme.typography.titleLarge)
         }
-        content()
+        Column(
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            content()
+        }
     }
 }
 
 @Composable
-fun SettingsPanel(viewModel: StreamViewModel) {
+fun SettingsPanel(viewModel: StreamViewModel, modifier: Modifier = Modifier) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
-    Column(modifier = Modifier.fillMaxSize().glassSurface().padding(16.dp)) {
+    Column(modifier = modifier.fillMaxSize().glassSurface().padding(16.dp)) {
         AnimatedContent(targetState = ui.settingsRoute, label = "settings-nav") { route ->
             when (route) {
-                SettingsRoute.Root -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                SettingsRoute.Root -> Column(modifier = Modifier.fillMaxSize()) {
                     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Text("Settings", color = OnSurfaceWhite, style = MaterialTheme.typography.titleLarge)
                         IconButton(onClick = viewModel::closeSettings) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close", tint = OnSurfaceWhite)
                         }
                     }
-                    NavRow("Destination", ui.url.ifBlank { "Not set" }) { viewModel.navigateSettings(SettingsRoute.Destination) }
-                    NavRow("Video", "${ui.quality.height}p ${ui.quality.fps}") { viewModel.navigateSettings(SettingsRoute.Video) }
-                    NavRow("Audio", "${ui.quality.audioBitrate / 1000} kbps") { viewModel.navigateSettings(SettingsRoute.Audio) }
-                    NavRow("Camera", "") { viewModel.navigateSettings(SettingsRoute.Camera) }
-                    NavRow("About & Reset", "") { viewModel.navigateSettings(SettingsRoute.About) }
+                    Column(
+                        modifier = Modifier.fillMaxWidth().weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        NavRow("Destination", ui.url.ifBlank { "Not set" }) { viewModel.navigateSettings(SettingsRoute.Destination) }
+                        NavRow("Video", "${ui.quality.height}p ${ui.quality.fps}") { viewModel.navigateSettings(SettingsRoute.Video) }
+                        NavRow("Audio", "${ui.quality.audioBitrate / 1000} kbps") { viewModel.navigateSettings(SettingsRoute.Audio) }
+                        NavRow("Camera", "") { viewModel.navigateSettings(SettingsRoute.Camera) }
+                        NavRow("About & Reset", "") { viewModel.navigateSettings(SettingsRoute.About) }
+                    }
                 }
                 SettingsRoute.Destination -> DestinationSettings(viewModel)
                 SettingsRoute.Video -> VideoSettings(viewModel)
