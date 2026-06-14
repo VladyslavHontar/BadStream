@@ -23,6 +23,7 @@ data class StreamUiState(
     val isActive: Boolean
         get() = stream is StreamState.Connecting ||
             stream is StreamState.Live ||
+            stream is StreamState.Reconnecting ||
             stream is StreamState.Stopping
 
     /** The signature preview-shrink is driven by this. */

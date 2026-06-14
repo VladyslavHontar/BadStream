@@ -34,4 +34,13 @@ class StreamUiStateTest {
     @Test fun settingsOpen_trueWhenPanelOpen() {
         assertTrue(StreamUiState(panelOpen = true).settingsOpen)
     }
+
+    @Test fun reconnecting_isActive_andNotGoLiveable() {
+        val s = StreamUiState(
+            settings = Settings(rtmpUrl = "rtmp://h/app", streamKey = "k"),
+            stream = StreamState.Reconnecting,
+        )
+        assertTrue(s.isActive)
+        assertFalse(s.canGoLive)
+    }
 }
