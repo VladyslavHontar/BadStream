@@ -72,7 +72,9 @@ class CameraStreamEngine(
             .getOrElse { _state.value = StreamState.Error(it.message ?: "Bad URL"); return }
 
         mediaStarted = false
-        val requested = CodecSelector.select(hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled)
+        val requested = resolveRequest(
+            config.codecOverride, hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled,
+        )
 
         _state.value = StreamState.Connecting
         val s = streamerFactory().also { streamer = it }

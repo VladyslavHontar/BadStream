@@ -129,4 +129,13 @@ class CameraStreamEngineTest {
         assertEquals(ConnectionHealth.Bad, e.health.value)
         e.stop()
     }
+
+    @Test fun forceAvcOverride_requestsAvc_evenWithHevcEncoder() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer, hevcEncoder = true, hevcMain10 = true, cameraHdr = true)
+        e.start(StreamConfig("rtmp://h/app", "key", codecOverride = CodecOverride.ForceAvc))
+        runCurrent()
+        assertEquals(VideoCodecType.AVC, streamer.requestedCodec)
+        e.stop()
+    }
 }
