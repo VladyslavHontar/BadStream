@@ -4,4 +4,5 @@ package com.example.plohoystream.stream
 data class StreamConfig(
     val rtmpUrl: String,   // e.g. "rtmp://live.twitch.tv/app"
     val streamKey: String,
+    val hdrEnabled: Boolean = false,
 )
