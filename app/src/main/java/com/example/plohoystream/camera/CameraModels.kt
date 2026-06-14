@@ -18,6 +18,8 @@ data class CameraInfo(
     val outputSizes: List<Resolution>,
     val hasOis: Boolean,
     val supportsHdr: Boolean = false,
+    /** CameraCharacteristics.SENSOR_ORIENTATION (degrees: 0/90/180/270). */
+    val sensorOrientation: Int = 0,
 )
 
 data class CameraConfig(
@@ -29,4 +31,6 @@ data class CameraConfig(
     val lenses: List<CameraLens>,
     val hasOis: Boolean,
     val supportsHdr: Boolean = false,
+    /** CameraCharacteristics.SENSOR_ORIENTATION (degrees: 0/90/180/270). */
+    val sensorOrientation: Int = 0,
 )

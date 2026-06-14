@@ -19,6 +19,7 @@ object CameraCapabilities {
             lenses = buildLenses(cam),
             hasOis = cam.hasOis,
             supportsHdr = cam.supportsHdr,
+            sensorOrientation = cam.sensorOrientation,
         )
     }
 

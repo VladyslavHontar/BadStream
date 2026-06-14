@@ -48,6 +48,8 @@ object CameraEnumerator {
                 ?.map { Resolution(it.width, it.height) }
                 .orEmpty()
 
+            val sensorOrientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+
             val lensRatios = listOf(minZoom, 1.0f, 2.0f).filter { it in minZoom..maxZoom }
 
             val supportsHdr = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -67,6 +69,7 @@ object CameraEnumerator {
                 outputSizes = sizes,
                 hasOis = hasOis,
                 supportsHdr = supportsHdr,
+                sensorOrientation = sensorOrientation,
             )
         }
     }

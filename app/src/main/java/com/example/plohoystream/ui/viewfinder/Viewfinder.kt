@@ -58,7 +58,9 @@ fun Viewfinder(viewModel: StreamViewModel) {
 
     val bufferW = config?.previewSize?.width ?: 1920
     val bufferH = config?.previewSize?.height ?: 1080
-    val previewAspect = bufferH.toFloat() / bufferW
+    // Landscape display: the 16:9 sensor buffer is shown wide (fills height, letterboxed
+    // left/right), so the displayed aspect is width/height — not the portrait height/width.
+    val previewAspect = bufferW.toFloat() / bufferH
 
     // Signature shrink: preview weight springs from 1.0 to ~0.55 when settings open.
     val previewWeight by animateFloatAsState(
@@ -73,6 +75,8 @@ fun Viewfinder(viewModel: StreamViewModel) {
                 aspectRatio = previewAspect,
                 bufferWidth = bufferW,
                 bufferHeight = bufferH,
+                sensorOrientation = config?.sensorOrientation ?: 90,
+                isFrontFacing = facing == Facing.FRONT,
                 onSurface = { surface = it },
             )
         }
