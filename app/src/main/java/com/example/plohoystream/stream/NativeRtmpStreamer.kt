@@ -22,6 +22,9 @@ class NativeRtmpStreamer : RtmpStreamer {
         if (handle != 0L && nativeNegotiatedCodec(handle) == 1) VideoCodecType.HEVC else VideoCodecType.AVC
     }
 
+    override fun bytesSent(): Long = lock.withLock { if (handle != 0L) nativeBytesSent(handle) else 0L }
+    override fun queueDepth(): Int = lock.withLock { if (handle != 0L) nativeQueueDepth(handle) else 0 }
+
     override fun state(): Int = lock.withLock { if (handle != 0L) nativeState(handle) else 0 }
     override fun sendVideoConfig(csd: ByteArray) = lock.withLock { if (handle != 0L) nativeSendVideoConfig(handle, csd) }
     override fun sendVideo(annexb: ByteArray, keyframe: Boolean, ptsMs: Long, dtsMs: Long) = lock.withLock {
@@ -45,6 +48,8 @@ class NativeRtmpStreamer : RtmpStreamer {
         port: Int, width: Int, height: Int, fps: Int, sampleRate: Int, codec: Int,
     ): Long
     private external fun nativeNegotiatedCodec(handle: Long): Int
+    private external fun nativeBytesSent(handle: Long): Long
+    private external fun nativeQueueDepth(handle: Long): Int
     private external fun nativeStart(handle: Long)
     private external fun nativeState(handle: Long): Int
     private external fun nativeSendVideoConfig(handle: Long, csd: ByteArray)
