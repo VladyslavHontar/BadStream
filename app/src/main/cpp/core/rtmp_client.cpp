@@ -4,7 +4,15 @@
 #include "rtmp_chunk.h"
 #include "flv.h"
 namespace ps {
-Bytes BuildConnectCommand(const StreamParams& p, int txn) {
+static bool ServerAdvertisesHevc(const Bytes& payload) {
+    // The server echoes its supported codecs in the _result information object. Robust parsing
+    // walks the AMF0; for M1-C, scan this command payload for the ASCII "hvc1". Conservative
+    // (defaults to AVC if absent).
+    std::string s(payload.begin(), payload.end());
+    return s.find("hvc1") != std::string::npos;
+}
+
+Bytes BuildConnectCommand(const StreamParams& p, int txn, Codec requested) {
     Bytes b;
     Amf0::String(b, "connect");
     Amf0::Number(b, txn);
@@ -20,6 +28,12 @@ Bytes BuildConnectCommand(const StreamParams& p, int txn) {
     Amf0::Key(b, "videoFunction");  Amf0::Number(b, 1);
     Amf0::Key(b, "pageUrl");        Amf0::Null(b);
     Amf0::Key(b, "objectEncoding"); Amf0::Number(b, 0);
+    if (requested == Codec::Hevc) {
+        Amf0::Key(b, "fourCcList");
+        Amf0::StrictArrayBegin(b, 2);
+        Amf0::String(b, "hvc1");
+        Amf0::String(b, "avc1");
+    }
     Amf0::ObjectEnd(b);
     return b;
 }
@@ -36,7 +50,7 @@ void RtmpClient::sendCommand(const Bytes& body, int msid) {
     t_.Write(ChunkEncode(3, 0x14, msid, 0, body, outChunkSize_));
 }
 void RtmpClient::afterHandshake() {
-    sendCommand(BuildConnectCommand(p_, 1), 0);   // connect, txn=1
+    sendCommand(BuildConnectCommand(p_, 1, requestedCodec_), 0);   // connect, txn=1
     state_ = RtmpState::ConnectSent;
 }
 void RtmpClient::OnBytes(const Bytes& d) {
@@ -63,6 +77,11 @@ void RtmpClient::OnBytes(const Bytes& d) {
             // Server rejected a command (e.g. NetConnection.Connect.Rejected). Surface it.
             state_ = RtmpState::Error;
         } else if (name == "_result" && state_ == RtmpState::ConnectSent) {
+            bool serverHevc = ServerAdvertisesHevc(payload);
+            negotiatedCodec_ = (requestedCodec_ == Codec::Hevc && serverHevc) ? Codec::Hevc : Codec::Avc;
+            codec_ = (negotiatedCodec_ == Codec::Hevc)
+                ? std::unique_ptr<VideoCodec>(new HevcCodec())
+                : std::unique_ptr<VideoCodec>(new AvcCodec());
             outChunkSize_ = 4096;
             { Bytes cs; PutU32BE(cs, 4096); t_.Write(ChunkEncode(2, 0x01, 0, 0, cs, 128)); }
             { Bytes b; Amf0::String(b,"releaseStream"); Amf0::Number(b,++txn_); Amf0::Null(b); Amf0::String(b,p_.streamKey); sendCommand(b,0); }

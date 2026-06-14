@@ -15,7 +15,7 @@ struct StreamParams {
     double fps = 30.0;
 };
 // AMF0 body of the `connect` command (without chunk framing). Public for testing.
-Bytes BuildConnectCommand(const StreamParams& p, int txn);
+Bytes BuildConnectCommand(const StreamParams& p, int txn, Codec requested);
 
 enum class RtmpState { Idle, HandshakeSent, ConnectSent, CreateStreamSent, PublishSent, Publishing, Error };
 

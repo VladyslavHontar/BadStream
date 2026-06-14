@@ -6,7 +6,7 @@
 using namespace ps;
 TEST(RtmpClient, ConnectCommandObject) {
     StreamParams p; p.app = "live"; p.tcUrl = "rtmp://h/live"; p.streamKey = "key";
-    Bytes payload = BuildConnectCommand(p, /*txn*/1);
+    Bytes payload = BuildConnectCommand(p, /*txn*/1, Codec::Avc);
     // command name "connect"
     EXPECT_EQ(payload[0], 0x02); EXPECT_EQ(payload[2], 7);
     EXPECT_EQ(std::string((char*)&payload[3], 7), "connect");
@@ -29,6 +29,10 @@ static Bytes MakeResultSuccess() {
     Amf0::ObjectBegin(b);
     Amf0::Key(b,"level"); Amf0::String(b,"status");
     Amf0::Key(b,"code");  Amf0::String(b,"NetConnection.Connect.Success");
+    // Advertise both codecs so a HEVC request negotiates through to HEVC; an AVC request
+    // still negotiates to AVC. Mirrors an enhanced-RTMP server that supports HEVC.
+    Amf0::Key(b,"fourCcList"); Amf0::StrictArrayBegin(b,2);
+    Amf0::String(b,"hvc1"); Amf0::String(b,"avc1");
     Amf0::ObjectEnd(b);
     return MakeCommand(b);
 }
