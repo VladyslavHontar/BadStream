@@ -37,6 +37,7 @@ class FakeStreamEngine : VideoStreamEngine {
     fun emitLive() { _state.value = StreamState.Live }
     fun emitError(reason: String) { _state.value = StreamState.Error(reason) }
     fun emitIdle() { _state.value = StreamState.Idle }
+    fun emitReconnecting() { _state.value = StreamState.Reconnecting }
     fun emitBitrate(kbps: Int) { _bitrateKbps.value = kbps }
     fun emitHealth(h: ConnectionHealth) { _health.value = h }
     fun emitAudioLevel(level: Float) { _audioLevel.value = level }
