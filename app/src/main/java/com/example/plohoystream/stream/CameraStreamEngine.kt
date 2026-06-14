@@ -47,7 +47,7 @@ class CameraStreamEngine(
 
         _state.value = StreamState.Connecting
         val s = streamerFactory().also { streamer = it }
-        s.start(endpoint, width, height, fps, sampleRate)
+        s.start(endpoint, VideoCodecType.AVC, width, height, fps, sampleRate)
         startMedia(s)
 
         pollJob = scope.launch {

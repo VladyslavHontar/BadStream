@@ -8,14 +8,17 @@ class FakeRtmpStreamer : RtmpStreamer {
     var videoCount = 0; private set
     var audioConfigCount = 0; private set
     var audioCount = 0; private set
+    var requestedCodec: VideoCodecType = VideoCodecType.AVC; private set
+    var negotiatedCodecValue: VideoCodecType = VideoCodecType.AVC
     private var state = 0
 
     fun emitState(s: Int) { state = s }
 
-    override fun start(endpoint: RtmpEndpoint, width: Int, height: Int, fps: Int, sampleRate: Int) {
-        started = true; state = 1 // Connecting
+    override fun start(endpoint: RtmpEndpoint, codec: VideoCodecType, width: Int, height: Int, fps: Int, sampleRate: Int) {
+        requestedCodec = codec; negotiatedCodecValue = codec; started = true; state = 1 // Connecting
     }
     override fun state(): Int = state
+    override fun negotiatedCodec(): VideoCodecType = negotiatedCodecValue
     override fun sendVideoConfig(csd: ByteArray) { videoConfigCount++ }
     override fun sendVideo(annexb: ByteArray, keyframe: Boolean, ptsMs: Long, dtsMs: Long) { videoCount++ }
     override fun sendAudioConfig(sampleRate: Int, channels: Int) { audioConfigCount++ }
