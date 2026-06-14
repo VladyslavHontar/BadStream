@@ -46,17 +46,20 @@ public:
     void RequestCodec(Codec c) { requestedCodec_ = c; } // call before Begin()
     Codec negotiatedCodec() const { return negotiatedCodec_; }
     uint64_t bytesSent() const { return bytesSent_.load(); }
+    bool writeOk() const { return writeOk_; }
     void SendVideoConfig(const Bytes& csd);              // generic: dispatches through codec_
     void SendVideoConfig(const Bytes& sps, const Bytes& pps);
     void SendVideo(const Bytes& annexb, bool keyframe, uint32_t ptsMs, uint32_t dtsMs);
     void SendAudioConfig(int sampleRate, int channels);
     void SendAudio(const Bytes& aacRaw, uint32_t ptsMs);
+    void SendUnpublish();   // graceful publisher teardown: FCUnpublish + deleteStream + closeStream
 private:
     void sendCommand(const Bytes& body, int msgStreamId); // csid 3, type 0x14
     void afterHandshake();
-    void Send(const Bytes& b) { t_.Write(b); bytesSent_ += b.size(); }
+    void Send(const Bytes& b) { if (!t_.Write(b)) writeOk_ = false; bytesSent_ += b.size(); }
     Transport& t_;
     std::atomic<uint64_t> bytesSent_{0};
+    bool writeOk_ = true;          // egress thread only; no atomic needed
     StreamParams p_;
     RtmpState state_ = RtmpState::Idle;
     RtmpReader reader_;
@@ -68,5 +71,10 @@ private:
     std::unique_ptr<VideoCodec> codec_ = std::make_unique<AvcCodec>();
     Codec requestedCodec_ = Codec::Avc;
     Codec negotiatedCodec_ = Codec::Avc;
+    // Inbound control-channel accounting (RTMP spec 5.4): we must answer pings, echo the
+    // server's window-ack-size, and send our own Acknowledgement once we've received a window.
+    uint32_t serverWindow_ = 2500000;   // bytes; overwritten by an inbound Window-Ack-Size
+    uint64_t receivedBytes_ = 0;
+    uint64_t lastAckBytes_ = 0;
 };
 }
