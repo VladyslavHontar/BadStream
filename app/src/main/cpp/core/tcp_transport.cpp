@@ -1,4 +1,5 @@
 #include "tcp_transport.h"
+#include <cerrno>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -41,5 +42,13 @@ bool TcpTransport::Write(const std::vector<uint8_t>& d) {
     return true;
 }
 int TcpTransport::Read(uint8_t* buf, int maxLen) { return (int)::recv(fd_, buf, maxLen, 0); }
+int TcpTransport::ReadNonBlocking(uint8_t* buf, int maxLen) {
+    if (fd_ < 0) return -1;
+    ssize_t n = ::recv(fd_, buf, maxLen, MSG_DONTWAIT);
+    if (n > 0) return (int)n;
+    if (n == 0) return -1;                                  // peer closed
+    if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;  // nothing available now
+    return -1;                                              // real error
+}
 void TcpTransport::Close() { if (fd_ >= 0) { ::close(fd_); fd_ = -1; } }
 }

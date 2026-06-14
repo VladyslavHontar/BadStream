@@ -26,7 +26,8 @@ add_executable(core_tests
         test_stream_session.cpp
         test_hevc.cpp
         test_video_codec.cpp
-        test_codec_negotiation.cpp)
+        test_codec_negotiation.cpp
+        test_rtmp_control.cpp)
 target_link_libraries(core_tests PRIVATE plohoystream_core GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(core_tests)

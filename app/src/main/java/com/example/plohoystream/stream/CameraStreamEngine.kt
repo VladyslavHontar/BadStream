@@ -25,6 +25,7 @@ class CameraStreamEngine(
     private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality) -> Unit,
     private val stopMedia: () -> Unit,
     private val pollIntervalMs: Long = 250,
+    private val reconnectDelayMs: Long = 5000,
     private val hevcEncoder: Boolean = false,
     private val hevcMain10: Boolean = false,
     private val cameraHdr: Boolean = false,
@@ -59,6 +60,7 @@ class CameraStreamEngine(
     private var streamer: RtmpStreamer? = null
     private var pollJob: Job? = null
     @Volatile private var mediaStarted = false
+    @Volatile private var userWantsLive = false
 
     /** Lets the media-setup lambda publish the encoder surface back to the viewfinder. */
     fun publishEncoderSurface(s: Surface?) { _encoderSurface.value = s }
@@ -70,55 +72,83 @@ class CameraStreamEngine(
         val endpoint = runCatching { RtmpEndpoint.parse(config.rtmpUrl, config.streamKey) }
             .getOrElse { _state.value = StreamState.Error(it.message ?: "Bad URL"); return }
 
-        mediaStarted = false
+        userWantsLive = true
         val quality = config.quality
         val requested = resolveRequest(
             config.codecOverride, hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled,
         )
 
-        _state.value = StreamState.Connecting
-        val s = streamerFactory().also { streamer = it }
-        s.start(endpoint, requested.codec, width, height, fps, sampleRate)
-
         pollJob = scope.launch {
-            // Poll native state. The media pipeline is built lazily on the first Live(2): we
-            // read the negotiated codec then, so a server HEVC->AVC downgrade is honoured
-            // before the encoder is created. Connecting(1) and Live(2) are non-terminal so a
-            // mid-stream native drop (state -> 3) surfaces as Error instead of latching on
-            // Live forever. Only Error(3)/Idle(0) break the loop. stop() cancels pollJob.
-            while (true) {
-                when (s.state()) {
-                    2 -> {
-                        if (!mediaStarted) {
-                            mediaStarted = true
-                            val negotiated = s.negotiatedCodec()
-                            val actual = if (negotiated == VideoCodecType.HEVC) requested
-                                         else VideoFormat(VideoCodecType.AVC, main10 = false, DynamicRange.SDR)
-                            startMedia(s, actual, quality)
-                            _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
-                        }
-                        _state.value = StreamState.Live
-                        val kbps = bitrateMeter.update(s.bytesSent(), System.currentTimeMillis())
-                        _bitrateKbps.value = kbps
-                        _health.value = deriveHealth(
-                            queueDepth = s.queueDepth(),
-                            queueCapacity = queueCapacity,
-                            actualKbps = kbps,
-                            targetKbps = quality.videoBitrate / 1000,
-                        )
+            // Reconnect loop: each iteration is one full connect attempt with a fresh streamer +
+            // media pipeline (Moblin-style full restart). A transient Dropped → wait 5s → retry
+            // forever while the user wants to be live; a server Rejected is terminal. A user
+            // stop() cancels this job (interrupting the backoff delay) and tears down itself.
+            while (userWantsLive) {
+                mediaStarted = false
+                _state.value = StreamState.Connecting
+                val s = streamerFactory().also { streamer = it }
+                s.start(endpoint, requested.codec, width, height, fps, sampleRate)
+
+                val outcome = runSession(s, requested, quality)
+
+                // Per-attempt teardown (mirror of stop()'s media/flow cleanup, minus job cancel).
+                if (mediaStarted) stopMedia()
+                mediaStarted = false
+                _encoderSurface.value = null
+                _activeHdr.value = false
+                _bitrateKbps.value = 0
+                _health.value = ConnectionHealth.Good
+                _audioLevel.value = 0f
+                s.stop(); streamer = null
+
+                when (outcome) {
+                    Outcome.Rejected -> { userWantsLive = false; _state.value = StreamState.Error("Stream rejected") }
+                    Outcome.Dropped -> {
+                        if (!userWantsLive) break
+                        _state.value = StreamState.Reconnecting
+                        delay(reconnectDelayMs)      // cancellable: stop() aborts the wait
                     }
-                    3 -> { _state.value = StreamState.Error("Stream rejected"); break }
-                    0 -> { _state.value = StreamState.Idle; break }
-                    // 1 (Connecting) -> keep polling
                 }
-                delay(pollIntervalMs)
             }
         }
     }
 
+    /** Polls native state for one connect attempt; returns why it ended. */
+    private suspend fun runSession(s: RtmpStreamer, requested: VideoFormat, quality: VideoQuality): Outcome {
+        while (userWantsLive) {
+            when (s.state()) {
+                2 -> {
+                    if (!mediaStarted) {
+                        mediaStarted = true
+                        val negotiated = s.negotiatedCodec()
+                        val actual = if (negotiated == VideoCodecType.HEVC) requested
+                                     else VideoFormat(VideoCodecType.AVC, main10 = false, DynamicRange.SDR)
+                        startMedia(s, actual, quality)
+                        _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
+                    }
+                    _state.value = StreamState.Live
+                    val kbps = bitrateMeter.update(s.bytesSent(), System.currentTimeMillis())
+                    _bitrateKbps.value = kbps
+                    _health.value = deriveHealth(
+                        queueDepth = s.queueDepth(),
+                        queueCapacity = queueCapacity,
+                        actualKbps = kbps,
+                        targetKbps = quality.videoBitrate / 1000,
+                    )
+                }
+                3 -> return Outcome.Dropped       // native Dropped (transient)
+                4 -> return Outcome.Rejected      // native Rejected (terminal)
+                // 0 (Idle) / 1 (Connecting) -> keep polling
+            }
+            delay(pollIntervalMs)
+        }
+        return Outcome.Dropped                    // userWantsLive cleared mid-poll (user stop)
+    }
+
     override fun stop() {
+        userWantsLive = false
         _state.value = StreamState.Stopping
-        pollJob?.cancel(); pollJob = null
+        pollJob?.cancel(); pollJob = null        // also interrupts a pending reconnect delay()
         if (mediaStarted) stopMedia()
         mediaStarted = false
         _encoderSurface.value = null
@@ -129,6 +159,8 @@ class CameraStreamEngine(
         streamer?.stop(); streamer = null
         _state.value = StreamState.Idle
     }
+
+    private enum class Outcome { Dropped, Rejected }
 
     fun dispose() {
         stop()

@@ -41,14 +41,15 @@ class CameraStreamEngineTest {
         e.stop()
     }
 
-    @Test fun liveThenNativeDrop_surfacesAsError() = runTest {
+    @Test fun liveThenNativeDrop_entersReconnecting() = runTest {
         val streamer = FakeRtmpStreamer()
         val e = engine(streamer)
         e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
         streamer.emitState(2); advanceTimeBy(150); runCurrent()
         assertEquals(StreamState.Live, e.state.value)
-        streamer.emitState(3); advanceTimeBy(150); runCurrent()
-        assertTrue(e.state.value is StreamState.Error)
+        streamer.emitState(3); advanceTimeBy(150); runCurrent()   // 3 == native Dropped
+        assertEquals(StreamState.Reconnecting, e.state.value)
+        e.stop()
     }
 
     @Test fun start_withBadUrl_goesToError() = runTest {
@@ -58,11 +59,11 @@ class CameraStreamEngineTest {
         assertTrue(e.state.value is StreamState.Error)
     }
 
-    @Test fun nativeError_surfacesAsError() = runTest {
+    @Test fun nativeRejected_surfacesAsError() = runTest {
         val streamer = FakeRtmpStreamer()
         val e = engine(streamer)
         e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
-        streamer.emitState(3) // Error
+        streamer.emitState(4)                                     // 4 == native Rejected
         advanceTimeBy(150); runCurrent()
         assertTrue(e.state.value is StreamState.Error)
     }
@@ -139,5 +140,43 @@ class CameraStreamEngineTest {
         runCurrent()
         assertEquals(VideoCodecType.AVC, streamer.requestedCodec)
         e.stop()
+    }
+
+    @Test fun drop_thenReconnects_reachesLiveAgain() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer)
+        e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        assertEquals(StreamState.Live, e.state.value)
+        streamer.emitState(3); advanceTimeBy(150); runCurrent()   // drop
+        assertEquals(StreamState.Reconnecting, e.state.value)
+        advanceTimeBy(5000); runCurrent()                         // 5s backoff elapses -> new attempt
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()   // reconnected
+        assertEquals(StreamState.Live, e.state.value)
+        e.stop()
+    }
+
+    @Test fun stop_duringReconnectWait_endsIdle_noReconnect() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer)
+        e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        streamer.emitState(3); advanceTimeBy(150); runCurrent()
+        assertEquals(StreamState.Reconnecting, e.state.value)
+        e.stop(); runCurrent()
+        assertEquals(StreamState.Idle, e.state.value)
+        advanceTimeBy(6000); runCurrent()
+        assertEquals(StreamState.Idle, e.state.value)             // did not reconnect
+    }
+
+    @Test fun rejected_isTerminal_noReconnect() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer)
+        e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        streamer.emitState(4); advanceTimeBy(150); runCurrent()   // server rejection
+        assertTrue(e.state.value is StreamState.Error)
+        advanceTimeBy(6000); runCurrent()
+        assertTrue(e.state.value is StreamState.Error)            // stays terminal
     }
 }

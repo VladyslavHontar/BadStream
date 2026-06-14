@@ -54,6 +54,7 @@ void RtmpClient::afterHandshake() {
     state_ = RtmpState::ConnectSent;
 }
 void RtmpClient::OnBytes(const Bytes& d) {
+    receivedBytes_ += d.size();
     if (!handshakeDone_) {
         hsBuf_.insert(hsBuf_.end(), d.begin(), d.end());
         if (hsBuf_.size() < handshakeNeed_) return;
@@ -69,14 +70,41 @@ void RtmpClient::OnBytes(const Bytes& d) {
     reader_.Feed(d);
     uint8_t type; Bytes payload;
     while (reader_.Next(type, payload)) {
-        if (type != 0x14) continue;               // only AMF0 commands drive the FSM
+        if (type == 0x05) {                                  // Window Acknowledgement Size
+            if (payload.size() >= 4) {
+                serverWindow_ = ((uint32_t)payload[0]<<24)|((uint32_t)payload[1]<<16)|((uint32_t)payload[2]<<8)|payload[3];
+                Bytes w; PutU32BE(w, serverWindow_);
+                Send(ChunkEncode(2, 0x05, 0, 0, w, 128));    // echo our own window
+            }
+            continue;
+        }
+        if (type == 0x06) {                                  // Set Peer Bandwidth
+            if (payload.size() >= 4) {
+                serverWindow_ = ((uint32_t)payload[0]<<24)|((uint32_t)payload[1]<<16)|((uint32_t)payload[2]<<8)|payload[3];
+                Bytes w; PutU32BE(w, serverWindow_);
+                Send(ChunkEncode(2, 0x05, 0, 0, w, 128));    // reply with Window Ack Size
+            }
+            continue;
+        }
+        if (type == 0x04) {                                  // User Control
+            if (payload.size() >= 6 && payload[0] == 0x00 && payload[1] == 0x06) {  // PingRequest
+                Bytes pong = {0x00, 0x07,                    // PingResponse event
+                              payload[2], payload[3], payload[4], payload[5]};       // echo ts
+                Send(ChunkEncode(2, 0x04, 0, 0, pong, 128));
+            }
+            continue;
+        }
+        if (type == 0x03) continue;                          // Acknowledgement from server (info)
+        if (type != 0x14) continue;                          // only AMF0 commands drive the FSM
         Amf0Reader r(payload.data(), payload.size());
         std::string name = r.ReadString();
         int txn = (int)r.ReadNumber();
         if (name == "_error") {
-            // Server rejected a command (e.g. NetConnection.Connect.Rejected). Surface it.
             state_ = RtmpState::Error;
         } else if (name == "_result" && state_ == RtmpState::ConnectSent) {
+            // Some servers reject the connection with a _result carrying level=="error" (e.g.
+            // NetConnection.Connect.Rejected) instead of an _error command. Treat it as terminal.
+            if (Amf0::FindStringValue(payload, "level") == "error") { state_ = RtmpState::Error; continue; }
             bool serverHevc = ServerAdvertisesHevc(payload);
             negotiatedCodec_ = (requestedCodec_ == Codec::Hevc && serverHevc) ? Codec::Hevc : Codec::Avc;
             codec_ = (negotiatedCodec_ == Codec::Hevc)
@@ -90,9 +118,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
             { Bytes b; Amf0::String(b,"createStream");  Amf0::Number(b,createStreamTxn_); Amf0::Null(b); sendCommand(b,0); }
             state_ = RtmpState::CreateStreamSent;
         } else if (name == "_result" && state_ == RtmpState::CreateStreamSent && txn == createStreamTxn_) {
-            // Only the createStream reply (matching txn) carries the stream id; ignore
-            // stray _results that some servers send for releaseStream/FCPublish.
-            r.SkipValue();                         // skip the null command object
+            r.SkipValue();
             streamId_ = (int)r.ReadNumber();
             { Bytes b; Amf0::String(b,"publish"); Amf0::Number(b,++txn_); Amf0::Null(b);
               Amf0::String(b,p_.streamKey); Amf0::String(b,"live"); sendCommand(b, streamId_); }
@@ -103,9 +129,15 @@ void RtmpClient::OnBytes(const Bytes& d) {
                          BuildOnMetaData(p_.width, p_.height, p_.fps, p_.sampleRate), outChunkSize_));
                 state_ = RtmpState::Publishing;
             } else if (Amf0::FindStringValue(payload, "level") == "error") {
-                state_ = RtmpState::Error;         // e.g. NetStream.Publish.BadName
+                state_ = RtmpState::Error;
             }
         }
+    }
+    // Send our own Acknowledgement once we've consumed a full window of inbound bytes.
+    if (serverWindow_ > 0 && receivedBytes_ - lastAckBytes_ >= serverWindow_) {
+        Bytes a; PutU32BE(a, (uint32_t)receivedBytes_);
+        Send(ChunkEncode(2, 0x03, 0, 0, a, 128));
+        lastAckBytes_ = receivedBytes_;
     }
 }
 void RtmpClient::SendVideoConfig(const Bytes& csd) {
@@ -129,6 +161,11 @@ void RtmpClient::SendAudioConfig(int sampleRate, int channels) {
 void RtmpClient::SendAudio(const Bytes& aacRaw, uint32_t ptsMs) {
     Bytes body = FlvAudioFrame(aacRaw);
     Send(ChunkEncode(4, 0x08, streamId_, ptsMs, body, outChunkSize_));
+}
+void RtmpClient::SendUnpublish() {
+    { Bytes b; Amf0::String(b,"FCUnpublish");  Amf0::Number(b,++txn_); Amf0::Null(b); Amf0::String(b,p_.streamKey); sendCommand(b,0); }
+    { Bytes b; Amf0::String(b,"deleteStream"); Amf0::Number(b,++txn_); Amf0::Null(b); Amf0::Number(b, streamId_); sendCommand(b,0); }
+    { Bytes b; Amf0::String(b,"closeStream");  Amf0::Number(b,++txn_); Amf0::Null(b); sendCommand(b, streamId_); }
 }
 // Full RTMP chunk de-assembler. Parses one chunk per iteration: basic header (fmt + csid),
 // then a 0/4/8/11-byte message header per fmt with per-csid inheritance, optional extended

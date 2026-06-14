@@ -119,4 +119,17 @@ class StreamViewModelTest {
         assertEquals(5500, vm.uiState.value.bitrateKbps)
         assertEquals(ConnectionHealth.Warn, vm.uiState.value.health)
     }
+
+@Test fun reconnecting_propagatesToUiState_andIsActive() = runTest {
+    val engine = FakeStreamEngine()
+    val vm = StreamViewModel(engine, store = FakeSettingsStore())
+    advanceUntilIdle()
+    engine.start(StreamConfig("rtmp://h/app", "k"))
+    engine.emitLive()
+    advanceUntilIdle()
+    engine.emitReconnecting()
+    advanceUntilIdle()
+    assertEquals(StreamState.Reconnecting, vm.uiState.value.stream)
+    assertTrue(vm.uiState.value.isActive)
+}
 }
