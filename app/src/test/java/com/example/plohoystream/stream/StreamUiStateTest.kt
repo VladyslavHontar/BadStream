@@ -13,9 +13,10 @@ class StreamUiStateTest {
         assertTrue(StreamUiState(Settings(rtmpUrl = "rtmp://h/app", streamKey = "k"), StreamState.Error("x")).canGoLive)
         assertFalse(StreamUiState(Settings(rtmpUrl = "rtmp://h/app", streamKey = "k"), StreamState.Live).canGoLive) // already live
     }
-    @Test fun isActive_trueWhileConnectingLiveStopping() {
+    @Test fun isActive_trueWhileConnectingLiveReconnectingStopping() {
         assertTrue(StreamUiState(stream = StreamState.Connecting).isActive)
         assertTrue(StreamUiState(stream = StreamState.Live).isActive)
+        assertTrue(StreamUiState(stream = StreamState.Reconnecting).isActive)
         assertTrue(StreamUiState(stream = StreamState.Stopping).isActive)
         assertFalse(StreamUiState(stream = StreamState.Idle).isActive)
         assertFalse(StreamUiState(stream = StreamState.Error("x")).isActive)
