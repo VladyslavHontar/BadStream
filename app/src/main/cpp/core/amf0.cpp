@@ -35,7 +35,7 @@ void Amf0Reader::SkipValue() {
     else if (m == 0x05 || m == 0x06) { /* null/undefined: marker only */ }
     else if (m == 0x03) { ForEachProperty([](const std::string&, Amf0Reader& r){ r.SkipValue(); return true; }); } // object
     else if (m == 0x08) { u32(); ForEachProperty([](const std::string&, Amf0Reader& r){ r.SkipValue(); return true; }); } // ECMA-array: skip count then enumerate
-    else if (m == 0x0A) { ForEachArrayElement([](Amf0Reader& r){ r.SkipValue(); return true; }); } // strict array
+    else if (m == 0x0A) { uint32_t cnt = u32(); for (uint32_t k = 0; k < cnt && !eof(); ++k) SkipValue(); } // strict array (marker already consumed)
     else { i_ = n_; }                                                 // unknown: stop
 }
 
