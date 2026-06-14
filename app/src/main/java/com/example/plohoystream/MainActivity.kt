@@ -7,8 +7,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.plohoystream.camera.CameraEnumerator
+import com.example.plohoystream.media.CodecCapabilities
 import com.example.plohoystream.stream.AudioEncoder
 import com.example.plohoystream.stream.CameraStreamEngine
+import com.example.plohoystream.stream.CodecSelector
 import com.example.plohoystream.stream.NativeRtmpStreamer
 import com.example.plohoystream.stream.StreamEngine
 import com.example.plohoystream.stream.VideoEncoder
@@ -22,16 +25,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val appCtx = applicationContext
+        val cameras = CameraEnumerator.enumerate(this)
+        val anyCameraHdr = cameras.any { it.supportsHdr }
+        val hevcCaps = CodecCapabilities.hevc()
+        val hdrAvailable = CodecSelector.hdrAvailable(hevcCaps.main10, anyCameraHdr)
         engine = run {
             var video: VideoEncoder? = null
             var audio: AudioEncoder? = null
             lateinit var eng: CameraStreamEngine
             eng = CameraStreamEngine(
                 streamerFactory = { NativeRtmpStreamer() },
-                startMedia = { streamer ->
+                hevcEncoder = hevcCaps.encoder,
+                hevcMain10 = hevcCaps.main10,
+                cameraHdr = anyCameraHdr,
+                startMedia = { streamer, fmt ->
                     StreamForegroundService.start(appCtx)
                     val v = VideoEncoder(
                         width = 1920, height = 1080, fps = 30, bitRate = 6_000_000,
+                        format = fmt,
                         onConfig = { csd -> streamer.sendVideoConfig(csd) },
                         onFrame = { annexb, key, pts -> streamer.sendVideo(annexb, key, pts, pts) },
                     )
@@ -56,7 +67,7 @@ class MainActivity : ComponentActivity() {
                 val vm: StreamViewModel = viewModel(factory = object : ViewModelProvider.Factory {
                     @Suppress("UNCHECKED_CAST")
                     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                        StreamViewModel(engine) as T
+                        StreamViewModel(engine, hdrAvailable) as T
                 })
                 StreamScreen(vm)
             }

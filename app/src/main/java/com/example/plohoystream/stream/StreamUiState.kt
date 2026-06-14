@@ -4,6 +4,8 @@ data class StreamUiState(
     val url: String = "",
     val key: String = "",
     val stream: StreamState = StreamState.Idle,
+    val hdrEnabled: Boolean = false,
+    val hdrAvailable: Boolean = false,
 ) {
     val canGoLive: Boolean
         get() = url.isNotBlank() && key.isNotBlank() &&

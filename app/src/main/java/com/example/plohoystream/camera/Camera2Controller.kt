@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.params.DynamicRangeProfiles
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.os.Handler
@@ -47,6 +48,7 @@ class Camera2Controller(context: Context) : CameraController {
     private var session: CameraCaptureSession? = null
     private var requestBuilder: CaptureRequest.Builder? = null
     private var targets: List<Surface> = emptyList()
+    private var hdr = false
     private var openedCameraId: String? = null
     private var opening = false
 
@@ -59,7 +61,7 @@ class Camera2Controller(context: Context) : CameraController {
     private var currentZoom = 1.0f
 
     @SuppressLint("MissingPermission")
-    override fun start(config: CameraConfig, targets: List<Surface>) {
+    override fun start(config: CameraConfig, targets: List<Surface>, hdr: Boolean) {
         handler.post {
             wantCameraId = config.cameraId
             // Skip a redundant start for the same camera + identical surfaces already
@@ -69,6 +71,7 @@ class Camera2Controller(context: Context) : CameraController {
                 return@post
             }
             this.targets = targets
+            this.hdr = hdr
             reopenAttempts = 0 // fresh user-initiated start: reset the recovery budget
             minZoom = config.minZoom
             maxZoom = config.maxZoom
@@ -179,7 +182,11 @@ class Camera2Controller(context: Context) : CameraController {
             return
         }
         try {
-            val outputs = valid.map { OutputConfiguration(it) }
+            val outputs = valid.map { surf ->
+                OutputConfiguration(surf).apply {
+                    if (hdr) runCatching { dynamicRangeProfile = DynamicRangeProfiles.HLG10 }
+                }
+            }
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 valid.forEach { addTarget(it) }
                 set(CaptureRequest.CONTROL_AF_MODE, CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO)

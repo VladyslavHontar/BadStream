@@ -8,14 +8,18 @@ class NativeRtmpStreamer : RtmpStreamer {
     private var handle: Long = 0L
     private val lock = ReentrantLock()
 
-    override fun start(endpoint: RtmpEndpoint, width: Int, height: Int, fps: Int, sampleRate: Int) = lock.withLock {
+    override fun start(endpoint: RtmpEndpoint, codec: VideoCodecType, width: Int, height: Int, fps: Int, sampleRate: Int) = lock.withLock {
         if (handle == 0L) {
             handle = nativeCreate(
                 endpoint.host, endpoint.app, endpoint.streamKey, endpoint.tcUrl,
-                endpoint.port, width, height, fps, sampleRate,
+                endpoint.port, width, height, fps, sampleRate, codec.nativeFlag,
             )
         }
         nativeStart(handle)
+    }
+
+    override fun negotiatedCodec(): VideoCodecType = lock.withLock {
+        if (handle != 0L && nativeNegotiatedCodec(handle) == 1) VideoCodecType.HEVC else VideoCodecType.AVC
     }
 
     override fun state(): Int = lock.withLock { if (handle != 0L) nativeState(handle) else 0 }
@@ -38,8 +42,9 @@ class NativeRtmpStreamer : RtmpStreamer {
 
     private external fun nativeCreate(
         host: String, app: String, key: String, tcUrl: String,
-        port: Int, width: Int, height: Int, fps: Int, sampleRate: Int,
+        port: Int, width: Int, height: Int, fps: Int, sampleRate: Int, codec: Int,
     ): Long
+    private external fun nativeNegotiatedCodec(handle: Long): Int
     private external fun nativeStart(handle: Long)
     private external fun nativeState(handle: Long): Int
     private external fun nativeSendVideoConfig(handle: Long, csd: ByteArray)

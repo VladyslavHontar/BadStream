@@ -10,6 +10,7 @@ struct Amf0 {
     static void Null(Bytes& b);
     static void ObjectBegin(Bytes& b);                      // 0x03
     static void EcmaArrayBegin(Bytes& b, uint32_t count);   // 0x08 + count
+    static void StrictArrayBegin(Bytes& b, uint32_t count);  // AMF0 strict array: 0x0A + U32 count, then `count` values
     static void ObjectEnd(Bytes& b);                        // 00 00 09
     static std::string FindStringValue(const Bytes& obj, const std::string& key);
 };

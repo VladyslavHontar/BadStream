@@ -6,7 +6,7 @@
 using namespace ps;
 TEST(RtmpClient, ConnectCommandObject) {
     StreamParams p; p.app = "live"; p.tcUrl = "rtmp://h/live"; p.streamKey = "key";
-    Bytes payload = BuildConnectCommand(p, /*txn*/1);
+    Bytes payload = BuildConnectCommand(p, /*txn*/1, Codec::Avc);
     // command name "connect"
     EXPECT_EQ(payload[0], 0x02); EXPECT_EQ(payload[2], 7);
     EXPECT_EQ(std::string((char*)&payload[3], 7), "connect");
@@ -29,6 +29,10 @@ static Bytes MakeResultSuccess() {
     Amf0::ObjectBegin(b);
     Amf0::Key(b,"level"); Amf0::String(b,"status");
     Amf0::Key(b,"code");  Amf0::String(b,"NetConnection.Connect.Success");
+    // Advertise both codecs so a HEVC request negotiates through to HEVC; an AVC request
+    // still negotiates to AVC. Mirrors an enhanced-RTMP server that supports HEVC.
+    Amf0::Key(b,"fourCcList"); Amf0::StrictArrayBegin(b,2);
+    Amf0::String(b,"hvc1"); Amf0::String(b,"avc1");
     Amf0::ObjectEnd(b);
     return MakeCommand(b);
 }
@@ -123,6 +127,27 @@ TEST(RtmpClient, SendVideoConfigEmitsTaggedChunk) {
     EXPECT_EQ(w[7], 0x09);               // message type video
     EXPECT_EQ(w[12], 0x17);              // FLV: keyframe+AVC
     EXPECT_EQ(w[13], 0x00);              // AVC seq header
+}
+TEST(RtmpClient, AvcSendUnchangedAfterCodecSeam) {
+    StubTransport t; StreamParams p; p.streamKey="5";
+    RtmpClient c(t, p); ForcePublishing(c);   // AVC is the default codec
+    t.clear();
+    Bytes sps{0x67,0x42,0x00,0x1e,0x11}, pps{0x68,0xce,0x3c,0x80};
+    c.SendVideoConfig(sps, pps);
+    const Bytes& w = t.written();
+    ASSERT_GT(w.size(), 12u);
+    EXPECT_EQ(w[12], 0x17); EXPECT_EQ(w[13], 0x00);   // legacy AVC seq header
+}
+TEST(RtmpClient, HevcSendEmitsExVideoTag) {
+    StubTransport t; StreamParams p; p.streamKey="5";
+    RtmpClient c(t, p); c.RequestCodec(Codec::Hevc); ForcePublishing(c);
+    t.clear();
+    Bytes hevcCsd{0,0,0,1, 0x40,0x01,0x0c,0x01, 0,0,0,1, 0x42,0x01,0x01, 0,0,0,1, 0x44,0x01,0xc0};
+    c.SendVideoConfig(hevcCsd);
+    const Bytes& w = t.written();
+    ASSERT_GT(w.size(), 17u);
+    EXPECT_EQ(w[12], 0x90);            // IsExHeader|key|SequenceStart
+    EXPECT_EQ(w[13], 'h'); EXPECT_EQ(w[16], '1');
 }
 TEST(RtmpClient, SendAudioRawEmitsTaggedChunk) {
     StubTransport t; StreamParams p; p.streamKey="5";

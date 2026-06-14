@@ -1,10 +1,13 @@
 #pragma once
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include "byte_writer.h"
 #include "transport.h"
+#include "video_codec.h"
 namespace ps {
+enum class Codec { Avc, Hevc };
 struct StreamParams {
     std::string host, app, streamKey, tcUrl;
     uint16_t port = 1935;
@@ -12,7 +15,7 @@ struct StreamParams {
     double fps = 30.0;
 };
 // AMF0 body of the `connect` command (without chunk framing). Public for testing.
-Bytes BuildConnectCommand(const StreamParams& p, int txn);
+Bytes BuildConnectCommand(const StreamParams& p, int txn, Codec requested);
 
 enum class RtmpState { Idle, HandshakeSent, ConnectSent, CreateStreamSent, PublishSent, Publishing, Error };
 
@@ -39,6 +42,9 @@ public:
     void OnBytes(const Bytes& d);  // advances the state machine
     RtmpState state() const { return state_; }
     int streamId() const { return streamId_; }
+    void RequestCodec(Codec c) { requestedCodec_ = c; } // call before Begin()
+    Codec negotiatedCodec() const { return negotiatedCodec_; }
+    void SendVideoConfig(const Bytes& csd);              // generic: dispatches through codec_
     void SendVideoConfig(const Bytes& sps, const Bytes& pps);
     void SendVideo(const Bytes& annexb, bool keyframe, uint32_t ptsMs, uint32_t dtsMs);
     void SendAudioConfig(int sampleRate, int channels);
@@ -55,5 +61,8 @@ private:
     Bytes hsBuf_;
     int txn_ = 1, streamId_ = 0, createStreamTxn_ = 0;
     uint32_t outChunkSize_ = 128;
+    std::unique_ptr<VideoCodec> codec_ = std::make_unique<AvcCodec>();
+    Codec requestedCodec_ = Codec::Avc;
+    Codec negotiatedCodec_ = Codec::Avc;
 };
 }

@@ -17,6 +17,7 @@ data class CameraInfo(
     val lensRatios: List<Float>,
     val outputSizes: List<Resolution>,
     val hasOis: Boolean,
+    val supportsHdr: Boolean = false,
 )
 
 data class CameraConfig(
@@ -27,4 +28,5 @@ data class CameraConfig(
     val maxZoom: Float,
     val lenses: List<CameraLens>,
     val hasOis: Boolean,
+    val supportsHdr: Boolean = false,
 )
