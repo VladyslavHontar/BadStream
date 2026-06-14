@@ -4,6 +4,10 @@ namespace ps {
 
 void StreamSession::Start() {
     if (running_.exchange(true)) return;
+    // Create the transport on the calling thread BEFORE spawning the egress thread so
+    // Stop() can reach it and Close() it to interrupt a blocking Read(). The factory only
+    // constructs the object (it does not connect), so this does not block.
+    transport_ = factory_();
     state_ = SessionState::Connecting;
     thread_ = std::thread([this] { run(); });
 }
@@ -11,7 +15,10 @@ void StreamSession::Start() {
 void StreamSession::Stop() {
     if (!running_.exchange(false)) { if (thread_.joinable()) thread_.join(); return; }
     queue_.Close();
+    // Close the socket to interrupt a blocking Read() on the egress thread (ANR fix).
+    if (transport_) transport_->Close();
     if (thread_.joinable()) thread_.join();
+    transport_.reset();
     state_ = SessionState::Idle;
 }
 
@@ -30,18 +37,17 @@ void StreamSession::SendAudio(const Bytes& aac, uint32_t pts) {
 }
 
 void StreamSession::run() {
-    auto transport = factory_();
-    if (!transport || !transport->Connect(params_.host, params_.port)) {
+    if (!transport_ || !transport_->Connect(params_.host, params_.port)) {
         state_ = SessionState::Error; running_ = false; return;
     }
-    RtmpClient client(*transport, params_);
+    RtmpClient client(*transport_, params_);
     client.Begin();
 
     uint8_t buf[8192];
     while (running_.load() &&
            client.state() != RtmpState::Publishing &&
            client.state() != RtmpState::Error) {
-        int n = transport->Read(buf, sizeof(buf));
+        int n = transport_->Read(buf, sizeof(buf));
         if (n <= 0) { state_ = SessionState::Error; running_ = false; return; }
         client.OnBytes(Bytes(buf, buf + n));
     }
@@ -68,8 +74,8 @@ void StreamSession::run() {
                 client.SendAudio(item.data, item.ptsMs);
                 break;
         }
-        if (!transport->connected()) { state_ = SessionState::Error; break; }
+        if (!transport_->connected()) { state_ = SessionState::Error; break; }
     }
-    transport->Close();
+    transport_->Close();
 }
 }

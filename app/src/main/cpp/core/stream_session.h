@@ -36,6 +36,7 @@ private:
 
     StreamParams params_;
     TransportFactory factory_;
+    std::unique_ptr<Transport> transport_;
     MediaQueue queue_;
     std::thread thread_;
     std::atomic<SessionState> state_{SessionState::Idle};

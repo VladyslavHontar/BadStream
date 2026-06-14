@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <thread>
 #include <chrono>
+#include <mutex>
+#include <condition_variable>
+#include <memory>
 #include "stream_session.h"
 #include "stub_transport.h"
 #include "rtmp_chunk.h"
@@ -67,4 +70,37 @@ TEST(StreamSession, ReachesLiveAndWritesVideo) {
 
     s.Stop();
     EXPECT_EQ(s.state(), SessionState::Idle);
+}
+
+// A transport whose Read blocks until Close() is called — models a silent/hung server.
+namespace {
+struct BlockingTransport : ps::Transport {
+    std::mutex m; std::condition_variable cv; bool closed = false; bool conn = false;
+    bool Connect(const std::string&, uint16_t) override { conn = true; return true; }
+    bool Write(const std::vector<uint8_t>&) override { return true; }
+    int Read(uint8_t*, int) override {
+        std::unique_lock<std::mutex> lk(m);
+        cv.wait(lk, [&] { return closed; });
+        return 0; // closed -> report EOF
+    }
+    void Close() override { { std::lock_guard<std::mutex> lk(m); closed = true; } cv.notify_all(); conn = false; }
+    bool connected() const override { return conn; }
+};
+}
+
+TEST(StreamSession, StopInterruptsBlockingRead) {
+    auto owned = std::make_unique<BlockingTransport>();
+    auto sp = std::make_shared<std::unique_ptr<BlockingTransport>>(std::move(owned));
+    ps::StreamParams p; p.host = "h"; p.app = "a"; p.streamKey = "k";
+    ps::StreamSession s(p, [sp]() mutable -> std::unique_ptr<ps::Transport> {
+        return std::unique_ptr<ps::Transport>(std::move(*sp));
+    });
+    s.Start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30)); // let the thread enter Read()
+    auto t0 = std::chrono::steady_clock::now();
+    s.Stop(); // must return promptly because Close() interrupts the blocking Read
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    EXPECT_LT(ms, 1000);
+    EXPECT_EQ(s.state(), ps::SessionState::Idle);
 }
