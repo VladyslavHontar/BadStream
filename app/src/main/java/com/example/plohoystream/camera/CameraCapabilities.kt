@@ -18,6 +18,7 @@ object CameraCapabilities {
             maxZoom = cam.maxZoom,
             lenses = buildLenses(cam),
             hasOis = cam.hasOis,
+            supportsHdr = cam.supportsHdr,
         )
     }
 

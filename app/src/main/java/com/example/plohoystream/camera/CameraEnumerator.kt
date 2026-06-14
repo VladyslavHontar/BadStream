@@ -50,6 +50,13 @@ object CameraEnumerator {
 
             val lensRatios = listOf(minZoom, 1.0f, 2.0f).filter { it in minZoom..maxZoom }
 
+            val supportsHdr = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                val profiles = c.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)
+                profiles?.supportedProfiles?.contains(
+                    android.hardware.camera2.params.DynamicRangeProfiles.HLG10
+                ) == true
+            } else false
+
             CameraInfo(
                 id = id,
                 facing = facing,
@@ -59,6 +66,7 @@ object CameraEnumerator {
                 lensRatios = lensRatios,
                 outputSizes = sizes,
                 hasOis = hasOis,
+                supportsHdr = supportsHdr,
             )
         }
     }
