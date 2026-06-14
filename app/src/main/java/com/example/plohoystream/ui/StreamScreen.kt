@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -102,7 +103,7 @@ private fun Viewfinder(viewModel: StreamViewModel) {
         val c = config
         val preview = surface
         if (c != null && preview != null) {
-            controller.start(c, listOfNotNull(preview, encoderSurface))
+            controller.start(c, listOfNotNull(preview, encoderSurface), hdr = ui.hdrEnabled && encoderSurface != null)
             controller.setZoom(zoom)
         }
     }
@@ -171,6 +172,21 @@ private fun Viewfinder(viewModel: StreamViewModel) {
                             controller.setZoom(it)
                         },
                         valueRange = cfg.minZoom..cfg.maxZoom,
+                    )
+                }
+            }
+
+            if (ui.hdrAvailable) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("HDR", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Switch(
+                        checked = ui.hdrEnabled,
+                        onCheckedChange = viewModel::setHdr,
+                        enabled = !ui.isActive,
                     )
                 }
             }

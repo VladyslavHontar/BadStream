@@ -53,4 +53,15 @@ class StreamViewModelTest {
         advanceUntilIdle()
         assertEquals(StreamState.Idle, vm.uiState.value.stream)
     }
+
+    @Test fun setHdr_thenGoLive_passesHdrEnabledInConfig() = runTest {
+        val engine = FakeStreamEngine()
+        val vm = StreamViewModel(engine, hdrAvailable = true)
+        vm.setUrl("rtmp://h/app"); vm.setKey("k")
+        vm.setHdr(true)
+        vm.goLive()
+        advanceUntilIdle()
+        assertEquals(StreamConfig("rtmp://h/app", "k", hdrEnabled = true), engine.lastConfig)
+        assertTrue(vm.uiState.value.hdrAvailable)
+    }
 }
