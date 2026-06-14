@@ -32,6 +32,12 @@ class MainActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+        // Request the panel's highest refresh rate so UI motion is smooth on high-Hz displays.
+        // MediaTek adaptive refresh otherwise parks the display at a low rate (e.g. 30/60 Hz)
+        // when an app doesn't signal it wants high-Hz, which reads as choppy interface motion.
+        display?.supportedModes?.maxByOrNull { it.refreshRate }?.let { best ->
+            window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+        }
         val appCtx = applicationContext
         val cameras = CameraEnumerator.enumerate(this)
         val anyCameraHdr = cameras.any { it.supportsHdr }
