@@ -65,22 +65,6 @@ fun StreamScreen(viewModel: StreamViewModel) {
 }
 
 @Composable
-private fun PermissionGate(onRequest: () -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text("PlohoyStream needs camera and microphone access to preview and stream.")
-            Button(onClick = onRequest) { Text("Grant camera access") }
-        }
-    }
-}
-
-@Composable
 private fun Viewfinder(viewModel: StreamViewModel) {
     val context = LocalContext.current
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
