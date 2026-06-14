@@ -81,7 +81,9 @@ fun Viewfinder(viewModel: StreamViewModel) {
             )
         }
         if (ui.settingsOpen) {
-            Box(modifier = Modifier.weight(1f - previewWeight).fillMaxHeight().padding(8.dp)) {
+            // Clamp: on the first frame after settings opens, previewWeight is still ~1.0 (it
+            // springs down to 0.55), which would make this weight 0 — Compose requires > 0.
+            Box(modifier = Modifier.weight((1f - previewWeight).coerceAtLeast(0.001f)).fillMaxHeight().padding(8.dp)) {
                 SettingsPanel(viewModel)
             }
         } else {
