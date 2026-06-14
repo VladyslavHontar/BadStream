@@ -4,6 +4,7 @@ add_library(plohoystream_core STATIC
         rtmp_handshake.cpp
         rtmp_chunk.cpp
         flv.cpp
+        hevc.cpp
         rtmp_client.cpp
         tcp_transport.cpp
         stream_session.cpp)
