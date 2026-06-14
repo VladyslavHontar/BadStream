@@ -17,6 +17,9 @@ class StreamViewModel(private val engine: StreamEngine, hdrAvailable: Boolean = 
     val encoderSurface: StateFlow<Surface?> =
         (engine as? VideoStreamEngine)?.encoderSurface ?: MutableStateFlow<Surface?>(null)
 
+    val activeHdr: StateFlow<Boolean> =
+        (engine as? VideoStreamEngine)?.activeHdr ?: MutableStateFlow(false)
+
     init {
         viewModelScope.launch {
             engine.state.collect { s -> _uiState.update { it.copy(stream = s) } }

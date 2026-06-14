@@ -19,4 +19,6 @@ interface StreamEngine {
  */
 interface VideoStreamEngine : StreamEngine {
     val encoderSurface: StateFlow<Surface?>
+    /** True only while streaming with a resolved HLG10/HDR format (after codec negotiation). */
+    val activeHdr: StateFlow<Boolean>
 }

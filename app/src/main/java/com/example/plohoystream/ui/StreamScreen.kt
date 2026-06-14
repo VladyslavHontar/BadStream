@@ -85,6 +85,7 @@ private fun Viewfinder(viewModel: StreamViewModel) {
     val context = LocalContext.current
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     val encoderSurface by viewModel.encoderSurface.collectAsStateWithLifecycle()
+    val activeHdr by viewModel.activeHdr.collectAsStateWithLifecycle()
 
     val cameras = remember { CameraEnumerator.enumerate(context) }
     val controller = remember { Camera2Controller(context) }
@@ -98,12 +99,14 @@ private fun Viewfinder(viewModel: StreamViewModel) {
 
     DisposableEffect(Unit) { onDispose { controller.stop() } }
 
-    // (Re)start the session when the camera config, preview surface, or encoder surface changes.
-    LaunchedEffect(config, surface, encoderSurface) {
+    // (Re)start the session when the camera config, preview surface, encoder surface, or
+    // negotiated HDR flag changes. hdr is driven by the engine's resolved format so a server
+    // HEVC->AVC downgrade clears it even if the user's toggle is still on.
+    LaunchedEffect(config, surface, encoderSurface, activeHdr) {
         val c = config
         val preview = surface
         if (c != null && preview != null) {
-            controller.start(c, listOfNotNull(preview, encoderSurface), hdr = ui.hdrEnabled && encoderSurface != null)
+            controller.start(c, listOfNotNull(preview, encoderSurface), hdr = activeHdr)
             controller.setZoom(zoom)
         }
     }

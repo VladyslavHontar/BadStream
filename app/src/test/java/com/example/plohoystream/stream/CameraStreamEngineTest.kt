@@ -91,6 +91,25 @@ class CameraStreamEngineTest {
         assertEquals(VideoCodecType.AVC, captured?.codec)
         assertEquals(DynamicRange.SDR, captured?.dynamicRange)
         assertEquals(false, captured?.main10)
+        assertEquals(false, e.activeHdr.value)
         e.stop()
+    }
+
+    @Test fun requestedHdr_serverKeepsHevc_activeHdrTrue() = runTest {
+        val streamer = FakeRtmpStreamer()
+        var captured: VideoFormat? = null
+        val e = engine(
+            streamer, hevcEncoder = true, hevcMain10 = true, cameraHdr = true,
+            startMedia = { _, fmt -> captured = fmt },
+        )
+        e.start(StreamConfig("rtmp://h/app", "key", hdrEnabled = true))
+        runCurrent()
+        // FakeRtmpStreamer.start sets negotiatedCodecValue = requested (HEVC); leave it.
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        assertEquals(VideoCodecType.HEVC, captured?.codec)
+        assertEquals(DynamicRange.HLG10, captured?.dynamicRange)
+        assertEquals(true, e.activeHdr.value)
+        e.stop()
+        assertEquals(false, e.activeHdr.value)
     }
 }

@@ -41,6 +41,9 @@ class CameraStreamEngine(
     private val _encoderSurface = MutableStateFlow<Surface?>(null)
     override val encoderSurface: StateFlow<Surface?> = _encoderSurface.asStateFlow()
 
+    private val _activeHdr = MutableStateFlow(false)
+    override val activeHdr: StateFlow<Boolean> = _activeHdr.asStateFlow()
+
     private var streamer: RtmpStreamer? = null
     private var pollJob: Job? = null
     @Volatile private var mediaStarted = false
@@ -74,6 +77,7 @@ class CameraStreamEngine(
                             val actual = if (negotiated == VideoCodecType.HEVC) requested
                                          else VideoFormat(VideoCodecType.AVC, main10 = false, DynamicRange.SDR)
                             startMedia(s, actual)
+                            _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
                         }
                         _state.value = StreamState.Live
                     }
@@ -92,6 +96,7 @@ class CameraStreamEngine(
         if (mediaStarted) stopMedia()
         mediaStarted = false
         _encoderSurface.value = null
+        _activeHdr.value = false
         streamer?.stop(); streamer = null
         _state.value = StreamState.Idle
     }
