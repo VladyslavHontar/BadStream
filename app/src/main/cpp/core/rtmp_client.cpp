@@ -4,13 +4,6 @@
 #include "rtmp_chunk.h"
 #include "flv.h"
 namespace ps {
-static bool ServerAdvertisesHevc(const Bytes& payload) {
-    // The server echoes its supported codecs in the _result information object. Robust parsing
-    // walks the AMF0; for M1-C, scan this command payload for the ASCII "hvc1". Conservative
-    // (defaults to AVC if absent).
-    std::string s(payload.begin(), payload.end());
-    return s.find("hvc1") != std::string::npos;
-}
 
 Bytes BuildConnectCommand(const StreamParams& p, int txn, Codec requested) {
     Bytes b;
@@ -105,7 +98,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
             // Some servers reject the connection with a _result carrying level=="error" (e.g.
             // NetConnection.Connect.Rejected) instead of an _error command. Treat it as terminal.
             if (Amf0::FindStringValue(payload, "level") == "error") { state_ = RtmpState::Error; continue; }
-            bool serverHevc = ServerAdvertisesHevc(payload);
+            bool serverHevc = VideoCodecAdvertised(payload, "hvc1");
             negotiatedCodec_ = (requestedCodec_ == Codec::Hevc && serverHevc) ? Codec::Hevc : Codec::Avc;
             codec_ = (negotiatedCodec_ == Codec::Hevc)
                 ? std::unique_ptr<VideoCodec>(new HevcCodec())
