@@ -13,11 +13,13 @@ import com.example.plohoystream.stream.NativeRtmpStreamer
 import com.example.plohoystream.stream.StreamEngine
 import com.example.plohoystream.stream.VideoEncoder
 import com.example.plohoystream.stream.StreamViewModel
+import com.example.plohoystream.service.StreamForegroundService
 import com.example.plohoystream.ui.StreamScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val appCtx = applicationContext
         val engine: StreamEngine = run {
             var video: VideoEncoder? = null
             var audio: AudioEncoder? = null
@@ -25,6 +27,7 @@ class MainActivity : ComponentActivity() {
             eng = CameraStreamEngine(
                 streamerFactory = { NativeRtmpStreamer() },
                 startMedia = { streamer ->
+                    StreamForegroundService.start(appCtx)
                     val v = VideoEncoder(
                         width = 1920, height = 1080, fps = 30, bitRate = 6_000_000,
                         onConfig = { csd -> streamer.sendVideoConfig(csd) },
@@ -41,6 +44,7 @@ class MainActivity : ComponentActivity() {
                 },
                 stopMedia = {
                     video?.stop(); audio?.stop(); video = null; audio = null
+                    StreamForegroundService.stop(appCtx)
                 },
             )
             eng
