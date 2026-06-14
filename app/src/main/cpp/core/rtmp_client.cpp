@@ -72,7 +72,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
     while (reader_.Next(type, payload)) {
         if (type == 0x05) {                                  // Window Acknowledgement Size
             if (payload.size() >= 4) {
-                serverWindow_ = (payload[0]<<24)|(payload[1]<<16)|(payload[2]<<8)|payload[3];
+                serverWindow_ = ((uint32_t)payload[0]<<24)|((uint32_t)payload[1]<<16)|((uint32_t)payload[2]<<8)|payload[3];
                 Bytes w; PutU32BE(w, serverWindow_);
                 Send(ChunkEncode(2, 0x05, 0, 0, w, 128));    // echo our own window
             }
@@ -80,7 +80,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
         }
         if (type == 0x06) {                                  // Set Peer Bandwidth
             if (payload.size() >= 4) {
-                serverWindow_ = (payload[0]<<24)|(payload[1]<<16)|(payload[2]<<8)|payload[3];
+                serverWindow_ = ((uint32_t)payload[0]<<24)|((uint32_t)payload[1]<<16)|((uint32_t)payload[2]<<8)|payload[3];
                 Bytes w; PutU32BE(w, serverWindow_);
                 Send(ChunkEncode(2, 0x05, 0, 0, w, 128));    // reply with Window Ack Size
             }

@@ -56,7 +56,7 @@ public:
 private:
     void sendCommand(const Bytes& body, int msgStreamId); // csid 3, type 0x14
     void afterHandshake();
-    void Send(const Bytes& b) { if (!t_.Write(b)) writeOk_ = false; bytesSent_ += b.size(); }
+    void Send(const Bytes& b) { if (t_.Write(b)) bytesSent_ += b.size(); else writeOk_ = false; }
     Transport& t_;
     std::atomic<uint64_t> bytesSent_{0};
     bool writeOk_ = true;          // egress thread only; no atomic needed
