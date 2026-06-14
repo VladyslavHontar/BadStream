@@ -1,0 +1,30 @@
+package com.example.plohoystream.camera
+
+enum class Facing { BACK, FRONT }
+
+data class Resolution(val width: Int, val height: Int) {
+    val pixels: Long get() = width.toLong() * height
+}
+
+data class CameraLens(val label: String, val zoomRatio: Float)
+
+data class CameraInfo(
+    val id: String,
+    val facing: Facing,
+    val isLogical: Boolean,
+    val minZoom: Float,
+    val maxZoom: Float,
+    val lensRatios: List<Float>,
+    val outputSizes: List<Resolution>,
+    val hasOis: Boolean,
+)
+
+data class CameraConfig(
+    val cameraId: String,
+    val facing: Facing,
+    val previewSize: Resolution,
+    val minZoom: Float,
+    val maxZoom: Float,
+    val lenses: List<CameraLens>,
+    val hasOis: Boolean,
+)
