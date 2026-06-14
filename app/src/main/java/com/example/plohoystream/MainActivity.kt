@@ -3,7 +3,7 @@ package com.example.plohoystream
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
+import com.example.plohoystream.ui.theme.PlohoyTheme
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -63,7 +63,7 @@ class MainActivity : ComponentActivity() {
             eng
         }
         setContent {
-            MaterialTheme {
+            PlohoyTheme {
                 val vm: StreamViewModel = viewModel(factory = object : ViewModelProvider.Factory {
                     @Suppress("UNCHECKED_CAST")
                     override fun <T : ViewModel> create(modelClass: Class<T>): T =
