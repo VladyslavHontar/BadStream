@@ -17,6 +17,7 @@ Bytes ChunkEncode(uint8_t csid, uint8_t msgType, uint32_t msgStreamId,
     PutBytes(b, payload.data(), first); off = first;
     while (off < n) {
         PutU8(b, (3 << 6) | (csid & 0x3F));        // fmt3 continuation
+        if (ext) PutU32BE(b, timestamp);           // spec: fmt3 chunks repeat the extended ts
         size_t take = std::min((size_t)chunkSize, n - off);
         PutBytes(b, payload.data() + off, take); off += take;
     }

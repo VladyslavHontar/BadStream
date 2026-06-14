@@ -126,7 +126,13 @@ bool RtmpReader::Next(uint8_t& msgType, Bytes& payload) {
             ch.len = (buf_[hp]<<16)|(buf_[hp+1]<<8)|buf_[hp+2]; ch.type = buf_[hp+3]; hp += 4; }
         if (fmt == 0) { if (hp + 4 > n) return false;
             ch.streamId = buf_[hp] | (buf_[hp+1]<<8) | (buf_[hp+2]<<16) | ((uint32_t)buf_[hp+3]<<24); hp += 4; }
-        if (fmt <= 2 && tsField == 0xFFFFFF) { if (hp + 4 > n) return false;   // extended timestamp
+        // Extended timestamp: present on fmt0/1/2 when the 3-byte field is 0xFFFFFF, and ALSO
+        // on every fmt3 continuation chunk of such a message (per RTMP spec, matching what
+        // ffmpeg/FMS emit and expect). Without re-reading it on fmt3, 4 payload bytes would be
+        // mis-consumed as a phantom timestamp and the chunk stream would desync.
+        if (fmt <= 2) ch.extTs = (tsField == 0xFFFFFF);
+        if ((fmt <= 2 && tsField == 0xFFFFFF) || (fmt == 3 && ch.extTs)) {
+            if (hp + 4 > n) return false;                                        // extended timestamp
             tsField = (buf_[hp]<<24)|(buf_[hp+1]<<16)|(buf_[hp+2]<<8)|buf_[hp+3]; hp += 4; }
         ch.ts = tsField;
         // --- payload for this chunk ---

@@ -26,7 +26,7 @@ public:
     void Feed(const Bytes& d) { buf_.insert(buf_.end(), d.begin(), d.end()); }
     bool Next(uint8_t& msgType, Bytes& payload);   // pops one complete message
 private:
-    struct Chunk { uint32_t len = 0, streamId = 0, ts = 0; uint8_t type = 0; Bytes partial; };
+    struct Chunk { uint32_t len = 0, streamId = 0, ts = 0; uint8_t type = 0; bool extTs = false; Bytes partial; };
     Bytes buf_; size_t pos_ = 0;
     uint32_t inChunkSize_ = 128;
     std::map<uint32_t, Chunk> cs_;   // per-chunk-stream-id state

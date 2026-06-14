@@ -107,8 +107,19 @@ private fun Viewfinder(viewModel: StreamViewModel) {
         }
     }
 
+    // Camera output size (sensor/landscape). Portrait display aspect is height/width.
+    val bufferW = config?.previewSize?.width ?: 1920
+    val bufferH = config?.previewSize?.height ?: 1080
+    val previewAspect = bufferH.toFloat() / bufferW
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        CameraPreview(modifier = Modifier.fillMaxSize(), onSurface = { surface = it })
+        CameraPreview(
+            modifier = Modifier.fillMaxSize(),
+            aspectRatio = previewAspect,
+            bufferWidth = bufferW,
+            bufferHeight = bufferH,
+            onSurface = { surface = it },
+        )
 
         // Top status bar.
         Row(
