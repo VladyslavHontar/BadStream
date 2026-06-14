@@ -3,6 +3,7 @@ package com.example.plohoystream.stream
 import android.view.Surface
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -73,5 +74,10 @@ class CameraStreamEngine(
         _encoderSurface.value = null
         streamer?.stop(); streamer = null
         _state.value = StreamState.Idle
+    }
+
+    fun dispose() {
+        stop()
+        scope.cancel()
     }
 }

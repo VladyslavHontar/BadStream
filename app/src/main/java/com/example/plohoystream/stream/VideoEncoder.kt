@@ -24,6 +24,7 @@ class VideoEncoder(
     val inputSurface: Surface
     private val thread = HandlerThread("VideoEnc").apply { start() }
     private val handler = Handler(thread.looper)
+    @Volatile private var released = false
 
     init {
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
@@ -36,6 +37,7 @@ class VideoEncoder(
         codec.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(c: MediaCodec, index: Int) {} // surface input
             override fun onOutputBufferAvailable(c: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                if (released) return
                 val buf = c.getOutputBuffer(index)
                 if (buf != null && info.size > 0) {
                     val bytes = ByteArray(info.size)
@@ -59,6 +61,8 @@ class VideoEncoder(
     fun start() = codec.start()
 
     fun stop() {
+        released = true
+        runCatching { codec.setCallback(null) }
         runCatching { codec.stop() }
         runCatching { codec.release() }
         inputSurface.release()

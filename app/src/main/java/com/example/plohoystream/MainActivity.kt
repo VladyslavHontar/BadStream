@@ -17,10 +17,12 @@ import com.example.plohoystream.service.StreamForegroundService
 import com.example.plohoystream.ui.StreamScreen
 
 class MainActivity : ComponentActivity() {
+    private lateinit var engine: StreamEngine
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val appCtx = applicationContext
-        val engine: StreamEngine = run {
+        engine = run {
             var video: VideoEncoder? = null
             var audio: AudioEncoder? = null
             lateinit var eng: CameraStreamEngine
@@ -59,5 +61,10 @@ class MainActivity : ComponentActivity() {
                 StreamScreen(vm)
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        (engine as? CameraStreamEngine)?.dispose() ?: engine.stop()
     }
 }

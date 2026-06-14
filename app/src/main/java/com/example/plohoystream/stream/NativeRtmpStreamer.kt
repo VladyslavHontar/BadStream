@@ -1,10 +1,14 @@
 package com.example.plohoystream.stream
 
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
+
 /** JNI-backed [RtmpStreamer]. One instance == one native StreamSession handle. */
 class NativeRtmpStreamer : RtmpStreamer {
     private var handle: Long = 0L
+    private val lock = ReentrantLock()
 
-    override fun start(endpoint: RtmpEndpoint, width: Int, height: Int, fps: Int, sampleRate: Int) {
+    override fun start(endpoint: RtmpEndpoint, width: Int, height: Int, fps: Int, sampleRate: Int) = lock.withLock {
         if (handle == 0L) {
             handle = nativeCreate(
                 endpoint.host, endpoint.app, endpoint.streamKey, endpoint.tcUrl,
@@ -14,17 +18,17 @@ class NativeRtmpStreamer : RtmpStreamer {
         nativeStart(handle)
     }
 
-    override fun state(): Int = if (handle != 0L) nativeState(handle) else 0
-    override fun sendVideoConfig(csd: ByteArray) { if (handle != 0L) nativeSendVideoConfig(handle, csd) }
-    override fun sendVideo(annexb: ByteArray, keyframe: Boolean, ptsMs: Long, dtsMs: Long) {
+    override fun state(): Int = lock.withLock { if (handle != 0L) nativeState(handle) else 0 }
+    override fun sendVideoConfig(csd: ByteArray) = lock.withLock { if (handle != 0L) nativeSendVideoConfig(handle, csd) }
+    override fun sendVideo(annexb: ByteArray, keyframe: Boolean, ptsMs: Long, dtsMs: Long) = lock.withLock {
         if (handle != 0L) nativeSendVideo(handle, annexb, keyframe, ptsMs, dtsMs)
     }
-    override fun sendAudioConfig(sampleRate: Int, channels: Int) {
+    override fun sendAudioConfig(sampleRate: Int, channels: Int) = lock.withLock {
         if (handle != 0L) nativeSendAudioConfig(handle, sampleRate, channels)
     }
-    override fun sendAudio(aac: ByteArray, ptsMs: Long) { if (handle != 0L) nativeSendAudio(handle, aac, ptsMs) }
+    override fun sendAudio(aac: ByteArray, ptsMs: Long) = lock.withLock { if (handle != 0L) nativeSendAudio(handle, aac, ptsMs) }
 
-    override fun stop() {
+    override fun stop() = lock.withLock {
         if (handle != 0L) {
             nativeStop(handle)
             nativeDestroy(handle)

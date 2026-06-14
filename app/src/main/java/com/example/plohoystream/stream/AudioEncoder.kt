@@ -29,6 +29,8 @@ class AudioEncoder(
     private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
     private lateinit var record: AudioRecord
     @Volatile private var running = false
+    private var feedThread: Thread? = null
+    private var drainThread: Thread? = null
 
     init {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
@@ -48,8 +50,8 @@ class AudioEncoder(
         codec.start()
         record.startRecording()
         running = true
-        thread(name = "AudioEnc-feed") { feedLoop() }
-        thread(name = "AudioEnc-drain") { drainLoop() }
+        feedThread = thread(name = "AudioEnc-feed") { feedLoop() }
+        drainThread = thread(name = "AudioEnc-drain") { drainLoop() }
     }
 
     private fun feedLoop() {
@@ -90,6 +92,8 @@ class AudioEncoder(
     fun stop() {
         running = false
         runCatching { record.stop(); record.release() }
+        runCatching { feedThread?.join(500); drainThread?.join(500) }
         runCatching { codec.stop(); codec.release() }
+        feedThread = null; drainThread = null
     }
 }
