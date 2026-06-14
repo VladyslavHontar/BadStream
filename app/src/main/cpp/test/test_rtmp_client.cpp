@@ -203,3 +203,21 @@ TEST(RtmpReader, AppliesInboundSetChunkSize) {
     ASSERT_TRUE(r.Next(type, payload)); EXPECT_EQ(type, 0x14);
     EXPECT_EQ(payload.size(), 200u);
 }
+
+TEST(RtmpClient, BytesSentIncreasesOnPublish) {
+    StubTransport t;
+    StreamParams p; p.app="live"; p.tcUrl="rtmp://h/live"; p.streamKey="5"; p.host="h";
+    RtmpClient c(t, p);
+    c.Begin();
+    Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
+    c.OnBytes(s0s1s2);
+    c.OnBytes(MakeResultSuccess());
+    c.OnBytes(MakeCreateStreamResult(1));
+    c.OnBytes(MakePublishStart());
+    ASSERT_EQ(c.state(), RtmpState::Publishing);
+    uint64_t before = c.bytesSent();
+    EXPECT_GT(before, 0u);                      // handshake + commands already counted
+    c.SendVideoConfig({0,0,0,1, 0x67,0x42,0x00,0x1e, 0,0,0,1, 0x68,0xce,0x3c,0x80});
+    c.SendVideo({0,0,0,1, 0x65, 0x88}, true, 0, 0);
+    EXPECT_GT(c.bytesSent(), before);
+}
