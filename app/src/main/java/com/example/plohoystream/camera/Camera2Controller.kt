@@ -11,6 +11,7 @@ import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.view.Surface
 import java.util.concurrent.Executor
 
@@ -82,10 +83,21 @@ class Camera2Controller(context: Context) : CameraController {
     }
 
     private fun configureSession(camera: CameraDevice) {
-        val outputs = targets.map { OutputConfiguration(it) }
-        if (outputs.isEmpty()) return
+        // Only configure surfaces whose producer is still alive. A target can be abandoned
+        // out from under us (e.g. an encoder input surface whose MediaCodec errored), and
+        // building an OutputConfiguration over an abandoned Surface throws — which on the
+        // camera thread would crash the whole app. Drop bad targets and keep previewing.
+        val valid = targets.filter { it.isValid }
+        targets.filterNot { it.isValid }.forEach { Log.w(TAG, "dropping abandoned camera target $it") }
+        if (valid.isEmpty()) return
+        val outputs = try {
+            valid.map { OutputConfiguration(it) }
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "a camera target was abandoned during configuration; skipping", e)
+            return
+        }
         val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            targets.forEach { addTarget(it) }
+            valid.forEach { addTarget(it) }
             set(CaptureRequest.CONTROL_AF_MODE, CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
             set(CaptureRequest.CONTROL_ZOOM_RATIO, currentZoom)
         }
@@ -102,11 +114,17 @@ class Camera2Controller(context: Context) : CameraController {
                 }
 
                 override fun onConfigureFailed(failed: CameraCaptureSession) {
+                    Log.w(TAG, "camera session configuration failed")
                     // Leave session null; a subsequent start() can retry.
                 }
             },
         )
-        camera.createCaptureSession(sessionConfig)
+        runCatching { camera.createCaptureSession(sessionConfig) }
+            .onFailure { Log.w(TAG, "createCaptureSession threw", it) }
+    }
+
+    private companion object {
+        const val TAG = "Camera2Controller"
     }
 
     private fun closeSession() {
