@@ -34,7 +34,7 @@ import com.example.plohoystream.ui.theme.SignatureDpSpring
  */
 @Composable
 fun GoLiveButton(state: StreamState, enabled: Boolean, onGoLive: () -> Unit, onStop: () -> Unit) {
-    val active = state is StreamState.Live || state is StreamState.Stopping
+    val active = state is StreamState.Live || state is StreamState.Stopping || state is StreamState.Reconnecting
     val connecting = state is StreamState.Connecting
     val innerCorner by animateDpAsState(targetValue = if (active) 8.dp else 28.dp, animationSpec = SignatureDpSpring, label = "corner")
     val innerSize by animateDpAsState(targetValue = if (active) 26.dp else 56.dp, animationSpec = SignatureDpSpring, label = "size")

@@ -53,14 +53,15 @@ fun ControlRail(
     onSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val live = state is StreamState.Live
+    val reconnecting = state is StreamState.Reconnecting
+    val live = state is StreamState.Live || reconnecting
     Column(
         modifier = modifier.fillMaxHeight().width(220.dp).glassSurface().padding(16.dp),
         verticalArrangement = Arrangement.SpaceBetween,
         horizontalAlignment = Alignment.Start,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            LiveStatusCluster(live = live, elapsed = elapsed)
+            LiveStatusCluster(live = live, elapsed = elapsed, reconnecting = reconnecting)
             if (live) {
                 HealthIndicator(health = health, bitrateKbps = bitrateKbps)
                 AudioMeter(level = audioLevel)
@@ -96,4 +97,9 @@ fun ControlRail(
 @Preview(name = "error", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailErrorPreview() = PlohoyTheme {
     ControlRail(StreamState.Error("Connection refused"), "00:00", ConnectionHealth.Bad, 0, 0f, emptyList(), 1f, true, "Connection refused", {}, {}, {}, {}, {})
+}
+
+@Preview(name = "reconnecting", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
+@Composable private fun RailReconnectingPreview() = PlohoyTheme {
+    ControlRail(StreamState.Reconnecting, "01:30", ConnectionHealth.Warn, 0, 0f, emptyList(), 1f, false, null, {}, {}, {}, {}, {})
 }
