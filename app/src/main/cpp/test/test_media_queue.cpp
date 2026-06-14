@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <chrono>
 #include "media_queue.h"
 using namespace ps;
 
@@ -38,4 +39,23 @@ TEST(MediaQueue, SizeReflectsPending) {
     MediaItem out;
     ASSERT_TRUE(q.Pop(out));
     EXPECT_EQ(q.size(), 1u);
+}
+
+TEST(MediaQueue, PopTimeoutReturnsFalseWhenEmptyAfterTimeout) {
+    ps::MediaQueue q(4);
+    ps::MediaItem out;
+    auto t0 = std::chrono::steady_clock::now();
+    bool got = q.PopTimeout(out, 30);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    EXPECT_FALSE(got);
+    EXPECT_GE(ms, 25);            // actually waited ~the timeout
+}
+
+TEST(MediaQueue, PopTimeoutReturnsItemImmediatelyWhenAvailable) {
+    ps::MediaQueue q(4);
+    q.Push(ps::MediaItem{ps::MediaItem::Audio, {1,2,3}, false, 0, 0});
+    ps::MediaItem out;
+    EXPECT_TRUE(q.PopTimeout(out, 1000));
+    EXPECT_EQ(out.data.size(), 3u);
 }

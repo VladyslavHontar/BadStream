@@ -1,4 +1,5 @@
 #pragma once
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -34,6 +35,17 @@ public:
         std::unique_lock<std::mutex> lk(m_);
         cv_.wait(lk, [&] { return closed_ || !q_.empty(); });
         if (q_.empty()) return false;     // closed + drained
+        out = std::move(q_.front());
+        q_.pop_front();
+        return true;
+    }
+
+    // Like Pop but waits at most timeoutMs. Returns false on timeout (queue still open but
+    // empty) OR on closed+drained — the caller distinguishes via its own running flag.
+    bool PopTimeout(MediaItem& out, int timeoutMs) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait_for(lk, std::chrono::milliseconds(timeoutMs), [&] { return closed_ || !q_.empty(); });
+        if (q_.empty()) return false;
         out = std::move(q_.front());
         q_.pop_front();
         return true;
