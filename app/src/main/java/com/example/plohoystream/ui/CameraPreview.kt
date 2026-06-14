@@ -1,8 +1,8 @@
 package com.example.plohoystream.ui
 
+import android.graphics.SurfaceTexture
 import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.TextureView
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
@@ -13,19 +13,25 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 
 /**
- * A [SurfaceView]-backed preview that **center-crops** to the camera's aspect ratio so the
- * image is never stretched. [aspectRatio] is the preview's width / height in the current
- * display orientation (for a portrait phone with a landscape sensor that is
- * `previewSize.height / previewSize.width`). The SurfaceView is sized to fully cover the
- * container and the overflow is clipped — matching how native camera apps fill the screen.
+ * A [TextureView]-backed camera preview that **letterboxes** (fits) the camera's aspect ratio
+ * so the full frame is visible and never stretched. The leftover margins are black bars —
+ * intentionally usable space for overlay controls.
  *
- * Reports its [Surface] up to the caller as it becomes available (created) / unavailable
- * (destroyed) so the camera session can be wired and torn down at the right moments.
+ * A [TextureView] (not a SurfaceView) is required: it applies the camera's orientation
+ * transform when rendering the [SurfaceTexture], so the landscape sensor buffer shows upright.
+ * A plain SurfaceView shows the raw buffer and would appear rotated/stretched.
+ *
+ * @param aspectRatio displayed width / height in the current orientation. For a portrait
+ *   phone with a landscape sensor that is `previewSize.height / previewSize.width`.
+ * @param bufferWidth / [bufferHeight] the camera's chosen output size (sensor/landscape
+ *   orientation); used to size the SurfaceTexture buffer the camera renders into.
  */
 @Composable
 fun CameraPreview(
     modifier: Modifier = Modifier,
     aspectRatio: Float,
+    bufferWidth: Int,
+    bufferHeight: Int,
     onSurface: (Surface?) -> Unit,
 ) {
     BoxWithConstraints(
@@ -37,13 +43,12 @@ fun CameraPreview(
         val containerAspect = if (containerH > 0f) containerW / containerH else 1f
         val ratio = if (aspectRatio > 0f) aspectRatio else containerAspect
 
-        // Cover the container (center-crop): scale up so both dimensions are >= the container.
+        // Fit inside the container (letterbox): the whole frame is visible; the leftover
+        // margins are black bars.
         val (wPx, hPx) = if (ratio > containerAspect) {
-            // preview is wider than the container → match height, overflow (crop) width
-            (containerH * ratio) to containerH
+            containerW to (containerW / ratio)            // bars top & bottom
         } else {
-            // preview is taller than the container → match width, overflow (crop) height
-            containerW to (containerW / ratio)
+            (containerH * ratio) to containerH            // bars left & right
         }
 
         val density = LocalDensity.current
@@ -53,12 +58,24 @@ fun CameraPreview(
         AndroidView(
             modifier = Modifier.size(wDp, hDp),
             factory = { ctx ->
-                SurfaceView(ctx).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) = onSurface(holder.surface)
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                        override fun surfaceDestroyed(holder: SurfaceHolder) = onSurface(null)
-                    })
+                TextureView(ctx).apply {
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                            if (bufferWidth > 0 && bufferHeight > 0) st.setDefaultBufferSize(bufferWidth, bufferHeight)
+                            onSurface(Surface(st))
+                        }
+
+                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
+                            if (bufferWidth > 0 && bufferHeight > 0) st.setDefaultBufferSize(bufferWidth, bufferHeight)
+                        }
+
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                            onSurface(null)
+                            return true
+                        }
+
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+                    }
                 }
             },
         )
