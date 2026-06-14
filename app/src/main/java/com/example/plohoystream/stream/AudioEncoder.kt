@@ -18,6 +18,10 @@ class AudioEncoder(
     private val sampleRate: Int = 44100,
     private val channels: Int = 2,
     bitRate: Int = 128_000,
+    /** Shared epoch captured once at stream start via [System.nanoTime]. Audio PTS is
+     *  computed as `(System.nanoTime() - nanoT0) / 1_000_000` so both audio and video
+     *  share a common timeline anchor (M2-B A/V sync). */
+    private val nanoT0: Long = 0L,
     private val onLevel: (Float) -> Unit = {},
     private val onFrame: (aac: ByteArray, ptsMs: Long) -> Unit,
 ) {
@@ -70,7 +74,7 @@ class AudioEncoder(
             if (idx >= 0) {
                 val ib = codec.getInputBuffer(idx) ?: continue
                 ib.clear(); ib.put(pcm, 0, read)
-                val ptsUs = System.nanoTime() / 1000
+                val ptsUs = (System.nanoTime() - nanoT0) / 1_000L
                 codec.queueInputBuffer(idx, 0, read, ptsUs, 0)
             }
         }
