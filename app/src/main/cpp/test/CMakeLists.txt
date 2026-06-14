@@ -20,7 +20,9 @@ add_executable(core_tests
         test_rtmp_handshake.cpp
         test_rtmp_chunk.cpp
         test_flv.cpp
-        test_rtmp_client.cpp)
+        test_rtmp_client.cpp
+        test_media_queue.cpp
+        test_stream_session.cpp)
 target_link_libraries(core_tests PRIVATE plohoystream_core GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(core_tests)
