@@ -50,6 +50,10 @@ class Camera2Controller(context: Context) : CameraController {
     private var openedCameraId: String? = null
     private var opening = false
 
+    // The camera id the UI currently wants open (null after stop()); drives auto-recovery.
+    private var wantCameraId: String? = null
+    private var reopenAttempts = 0
+
     private var minZoom = 1.0f
     private var maxZoom = 1.0f
     private var currentZoom = 1.0f
@@ -57,7 +61,15 @@ class Camera2Controller(context: Context) : CameraController {
     @SuppressLint("MissingPermission")
     override fun start(config: CameraConfig, targets: List<Surface>) {
         handler.post {
+            wantCameraId = config.cameraId
+            // Skip a redundant start for the same camera + identical surfaces already
+            // active/in-flight (the preview can re-issue an unchanged start at launch).
+            if (config.cameraId == openedCameraId && targets == this.targets && (device != null || opening)) {
+                Log.i(TAG, "start ignored: camera ${config.cameraId} already active with same targets")
+                return@post
+            }
             this.targets = targets
+            reopenAttempts = 0 // fresh user-initiated start: reset the recovery budget
             minZoom = config.minZoom
             maxZoom = config.maxZoom
             currentZoom = CameraControls.clampZoom(currentZoom, minZoom, maxZoom)
@@ -77,21 +89,17 @@ class Camera2Controller(context: Context) : CameraController {
                 else -> {
                     Log.i(TAG, "opening camera ${config.cameraId}")
                     closeCamera()
-                    openedCameraId = config.cameraId
-                    opening = true
-                    runCatching { manager.openCamera(config.cameraId, deviceCallback, handler) }
-                        .onFailure {
-                            Log.w(TAG, "openCamera failed", it)
-                            opening = false
-                            openedCameraId = null
-                        }
+                    openCameraInternal(config.cameraId)
                 }
             }
         }
     }
 
     override fun stop() {
-        handler.post { closeCamera() }
+        handler.post {
+            wantCameraId = null
+            closeCamera()
+        }
     }
 
     override fun setZoom(ratio: Float) {
@@ -112,6 +120,7 @@ class Camera2Controller(context: Context) : CameraController {
                 return
             }
             opening = false
+            reopenAttempts = 0 // a successful open clears the recovery budget
             device = camera
             reconfigure(camera)
         }
@@ -120,13 +129,41 @@ class Camera2Controller(context: Context) : CameraController {
             Log.w(TAG, "camera ${camera.id} disconnected")
             runCatching { camera.close() }
             resetDeviceState(camera)
+            maybeReopen()
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
             Log.w(TAG, "camera ${camera.id} error $error")
             runCatching { camera.close() }
             resetDeviceState(camera)
+            maybeReopen()
         }
+    }
+
+    /** Open [cameraId], tracking the in-flight state so concurrent/stale opens are coalesced. */
+    @SuppressLint("MissingPermission")
+    private fun openCameraInternal(cameraId: String) {
+        openedCameraId = cameraId
+        opening = true
+        runCatching { manager.openCamera(cameraId, deviceCallback, handler) }
+            .onFailure {
+                Log.w(TAG, "openCamera failed", it)
+                opening = false
+                openedCameraId = null
+            }
+    }
+
+    /** Recover from an unexpected disconnect/error by reopening the wanted camera, bounded. */
+    private fun maybeReopen() {
+        val want = wantCameraId ?: return // UI no longer wants a camera (stopped)
+        if (targets.isEmpty()) return
+        if (reopenAttempts >= MAX_REOPEN) {
+            Log.w(TAG, "giving up reopening $want after $MAX_REOPEN attempts")
+            return
+        }
+        reopenAttempts++
+        Log.i(TAG, "reopening $want (attempt $reopenAttempts/$MAX_REOPEN)")
+        openCameraInternal(want)
     }
 
     /** (Re)build a capture session for the current [targets] on an already-open [camera]. */
@@ -201,5 +238,6 @@ class Camera2Controller(context: Context) : CameraController {
 
     private companion object {
         const val TAG = "Camera2Controller"
+        const val MAX_REOPEN = 3
     }
 }
