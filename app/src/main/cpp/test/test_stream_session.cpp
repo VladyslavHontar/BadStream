@@ -167,3 +167,25 @@ TEST(StreamSession, NormalizesTimestampsToStreamStart) {
     EXPECT_EQ(frameTs[0], 0u);     // rebased to stream start
     EXPECT_EQ(frameTs[1], 100u);   // relative offset preserved
 }
+
+TEST(StreamSession, BytesSentIncreasesAfterLive) {
+    auto owned = std::make_unique<StubTransport>();
+    StubTransport* stub = owned.get();
+    PreloadPublishHandshake(*stub);
+    StreamParams p; p.host="h"; p.app="app"; p.streamKey="k"; p.tcUrl="rtmp://h/app";
+    auto held = std::make_shared<std::unique_ptr<StubTransport>>(std::move(owned));
+    StreamSession s(p, [held]() mutable -> std::unique_ptr<Transport> { return std::move(*held); });
+    s.Start();
+    for (int i = 0; i < 200 && s.state() != SessionState::Live; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ASSERT_EQ(s.state(), SessionState::Live);
+    s.SendVideoConfig({0,0,0,1, 0x67,0x42,0x00,0x1e, 0,0,0,1, 0x68,0xce,0x3c,0x80});
+    s.SendVideo({0,0,0,1, 0x65, 0x88}, true, 0, 0);
+    uint64_t sent = 0;
+    for (int i = 0; i < 100 && sent == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        sent = s.bytesSent();
+    }
+    EXPECT_GT(sent, 0u);
+    s.Stop();
+}

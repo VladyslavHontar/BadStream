@@ -11,6 +11,8 @@ class FakeRtmpStreamer : RtmpStreamer {
     var requestedCodec: VideoCodecType = VideoCodecType.AVC; private set
     var negotiatedCodecValue: VideoCodecType = VideoCodecType.AVC
     private var state = 0
+    var bytesSentValue: Long = 0L
+    var queueDepthValue: Int = 0
 
     fun emitState(s: Int) { state = s }
 
@@ -19,6 +21,8 @@ class FakeRtmpStreamer : RtmpStreamer {
     }
     override fun state(): Int = state
     override fun negotiatedCodec(): VideoCodecType = negotiatedCodecValue
+    override fun bytesSent(): Long = bytesSentValue
+    override fun queueDepth(): Int = queueDepthValue
     override fun sendVideoConfig(csd: ByteArray) { videoConfigCount++ }
     override fun sendVideo(annexb: ByteArray, keyframe: Boolean, ptsMs: Long, dtsMs: Long) { videoCount++ }
     override fun sendAudioConfig(sampleRate: Int, channels: Int) { audioConfigCount++ }

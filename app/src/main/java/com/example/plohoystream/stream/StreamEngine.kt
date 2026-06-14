@@ -21,4 +21,10 @@ interface VideoStreamEngine : StreamEngine {
     val encoderSurface: StateFlow<Surface?>
     /** True only while streaming with a resolved HLG10/HDR format (after codec negotiation). */
     val activeHdr: StateFlow<Boolean>
+    /** Smoothed egress bitrate in kbps (0 when not streaming). */
+    val bitrateKbps: StateFlow<Int>
+    /** Connection health derived from queue backpressure + actual-vs-target bitrate. */
+    val health: StateFlow<ConnectionHealth>
+    /** Normalized 0..1 microphone level (0 when not streaming). */
+    val audioLevel: StateFlow<Float>
 }

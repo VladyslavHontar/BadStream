@@ -27,6 +27,8 @@ public:
 
     SessionState state() const { return state_.load(); }
     Codec negotiatedCodec() const { return negotiated_.load(); }
+    uint64_t bytesSent() const { return bytesSent_.load(); }
+    int queueDepth() const { return queueDepth_.load(); }
 
     void SendVideoConfig(const Bytes& csd);  // raw SPS+PPS annexb blob; split natively
     void SendVideo(const Bytes& annexb, bool key, uint32_t ptsMs, uint32_t dtsMs);
@@ -44,6 +46,8 @@ private:
     std::thread thread_;
     std::atomic<SessionState> state_{SessionState::Idle};
     std::atomic<Codec> negotiated_{Codec::Avc};
+    std::atomic<uint64_t> bytesSent_{0};
+    std::atomic<int> queueDepth_{0};
     std::atomic<bool> running_{false};
 };
 }

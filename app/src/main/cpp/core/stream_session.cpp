@@ -86,6 +86,8 @@ void StreamSession::run() {
                 break;
             }
         }
+        bytesSent_.store(client.bytesSent());
+        queueDepth_.store(static_cast<int>(queue_.size()));
         if (!transport_->connected()) { state_ = SessionState::Error; break; }
     }
     transport_->Close();

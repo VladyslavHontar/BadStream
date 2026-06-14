@@ -18,6 +18,7 @@ class AudioEncoder(
     private val sampleRate: Int = 44100,
     private val channels: Int = 2,
     bitRate: Int = 128_000,
+    private val onLevel: (Float) -> Unit = {},
     private val onFrame: (aac: ByteArray, ptsMs: Long) -> Unit,
 ) {
     private val channelMask =
@@ -31,6 +32,7 @@ class AudioEncoder(
     @Volatile private var running = false
     private var feedThread: Thread? = null
     private var drainThread: Thread? = null
+    @Volatile private var lastLevelNs: Long = 0L
 
     init {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
@@ -59,6 +61,11 @@ class AudioEncoder(
         while (running) {
             val read = record.read(pcm, 0, pcm.size)
             if (read <= 0) continue
+            val now = System.nanoTime()
+            if (now - lastLevelNs >= 100_000_000L) {   // ~10 Hz
+                lastLevelNs = now
+                onLevel(rms16(pcm, read))
+            }
             val idx = codec.dequeueInputBuffer(10_000)
             if (idx >= 0) {
                 val ib = codec.getInputBuffer(idx) ?: continue

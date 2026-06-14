@@ -1,8 +1,10 @@
 package com.example.plohoystream.stream
 
-/** Egress target for M1-B. Resolution/bitrate/codec are auto-selected natively (M1-B.3). */
+/** Egress target + encoder settings applied at go-live (no mid-stream reconfig). */
 data class StreamConfig(
     val rtmpUrl: String,   // e.g. "rtmp://live.twitch.tv/app"
     val streamKey: String,
     val hdrEnabled: Boolean = false,
+    val quality: VideoQuality = VideoQuality.Default,
+    val codecOverride: CodecOverride = CodecOverride.Auto,
 )

@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
@@ -44,6 +45,7 @@ public:
     int streamId() const { return streamId_; }
     void RequestCodec(Codec c) { requestedCodec_ = c; } // call before Begin()
     Codec negotiatedCodec() const { return negotiatedCodec_; }
+    uint64_t bytesSent() const { return bytesSent_.load(); }
     void SendVideoConfig(const Bytes& csd);              // generic: dispatches through codec_
     void SendVideoConfig(const Bytes& sps, const Bytes& pps);
     void SendVideo(const Bytes& annexb, bool keyframe, uint32_t ptsMs, uint32_t dtsMs);
@@ -52,7 +54,9 @@ public:
 private:
     void sendCommand(const Bytes& body, int msgStreamId); // csid 3, type 0x14
     void afterHandshake();
+    void Send(const Bytes& b) { t_.Write(b); bytesSent_ += b.size(); }
     Transport& t_;
+    std::atomic<uint64_t> bytesSent_{0};
     StreamParams p_;
     RtmpState state_ = RtmpState::Idle;
     RtmpReader reader_;

@@ -43,11 +43,11 @@ void RtmpClient::Begin() {
         ? std::unique_ptr<VideoCodec>(new HevcCodec())
         : std::unique_ptr<VideoCodec>(new AvcCodec());
     negotiatedCodec_ = requestedCodec_;
-    RtmpHandshake h; t_.Write(h.BuildC0C1());
+    RtmpHandshake h; Send(h.BuildC0C1());
     state_ = RtmpState::HandshakeSent;
 }
 void RtmpClient::sendCommand(const Bytes& body, int msid) {
-    t_.Write(ChunkEncode(3, 0x14, msid, 0, body, outChunkSize_));
+    Send(ChunkEncode(3, 0x14, msid, 0, body, outChunkSize_));
 }
 void RtmpClient::afterHandshake() {
     sendCommand(BuildConnectCommand(p_, 1, requestedCodec_), 0);   // connect, txn=1
@@ -59,7 +59,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
         if (hsBuf_.size() < handshakeNeed_) return;
         RtmpHandshake h;
         Bytes s0s1(hsBuf_.begin(), hsBuf_.begin() + 1537);
-        t_.Write(h.BuildC2(s0s1));
+        Send(h.BuildC2(s0s1));
         handshakeDone_ = true;
         if (hsBuf_.size() > handshakeNeed_)
             reader_.Feed(Bytes(hsBuf_.begin() + handshakeNeed_, hsBuf_.end()));
@@ -83,7 +83,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
                 ? std::unique_ptr<VideoCodec>(new HevcCodec())
                 : std::unique_ptr<VideoCodec>(new AvcCodec());
             outChunkSize_ = 4096;
-            { Bytes cs; PutU32BE(cs, 4096); t_.Write(ChunkEncode(2, 0x01, 0, 0, cs, 128)); }
+            { Bytes cs; PutU32BE(cs, 4096); Send(ChunkEncode(2, 0x01, 0, 0, cs, 128)); }
             { Bytes b; Amf0::String(b,"releaseStream"); Amf0::Number(b,++txn_); Amf0::Null(b); Amf0::String(b,p_.streamKey); sendCommand(b,0); }
             { Bytes b; Amf0::String(b,"FCPublish");     Amf0::Number(b,++txn_); Amf0::Null(b); Amf0::String(b,p_.streamKey); sendCommand(b,0); }
             createStreamTxn_ = ++txn_;
@@ -99,7 +99,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
             state_ = RtmpState::PublishSent;
         } else if (name == "onStatus" && state_ == RtmpState::PublishSent) {
             if (Amf0::FindStringValue(payload, "code") == "NetStream.Publish.Start") {
-                t_.Write(ChunkEncode(8, 0x12, streamId_, 0,
+                Send(ChunkEncode(8, 0x12, streamId_, 0,
                          BuildOnMetaData(p_.width, p_.height, p_.fps, p_.sampleRate), outChunkSize_));
                 state_ = RtmpState::Publishing;
             } else if (Amf0::FindStringValue(payload, "level") == "error") {
@@ -110,7 +110,7 @@ void RtmpClient::OnBytes(const Bytes& d) {
 }
 void RtmpClient::SendVideoConfig(const Bytes& csd) {
     Bytes body = codec_->SequenceHeader(csd);
-    t_.Write(ChunkEncode(5, 0x09, streamId_, 0, body, outChunkSize_));
+    Send(ChunkEncode(5, 0x09, streamId_, 0, body, outChunkSize_));
 }
 void RtmpClient::SendVideoConfig(const Bytes& sps, const Bytes& pps) {
     Bytes csd; csd.insert(csd.end(), {0,0,0,1}); csd.insert(csd.end(), sps.begin(), sps.end());
@@ -120,15 +120,15 @@ void RtmpClient::SendVideoConfig(const Bytes& sps, const Bytes& pps) {
 void RtmpClient::SendVideo(const Bytes& annexb, bool keyframe, uint32_t ptsMs, uint32_t dtsMs) {
     uint32_t cts = ptsMs >= dtsMs ? ptsMs - dtsMs : 0;
     Bytes body = codec_->Frame(annexb, keyframe, cts);
-    t_.Write(ChunkEncode(5, 0x09, streamId_, dtsMs, body, outChunkSize_));
+    Send(ChunkEncode(5, 0x09, streamId_, dtsMs, body, outChunkSize_));
 }
 void RtmpClient::SendAudioConfig(int sampleRate, int channels) {
     Bytes body = FlvAudioSeqHeader(BuildAsc(sampleRate, channels));
-    t_.Write(ChunkEncode(4, 0x08, streamId_, 0, body, outChunkSize_));
+    Send(ChunkEncode(4, 0x08, streamId_, 0, body, outChunkSize_));
 }
 void RtmpClient::SendAudio(const Bytes& aacRaw, uint32_t ptsMs) {
     Bytes body = FlvAudioFrame(aacRaw);
-    t_.Write(ChunkEncode(4, 0x08, streamId_, ptsMs, body, outChunkSize_));
+    Send(ChunkEncode(4, 0x08, streamId_, ptsMs, body, outChunkSize_));
 }
 // Full RTMP chunk de-assembler. Parses one chunk per iteration: basic header (fmt + csid),
 // then a 0/4/8/11-byte message header per fmt with per-csid inheritance, optional extended

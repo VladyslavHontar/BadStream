@@ -7,6 +7,10 @@ interface RtmpStreamer {
     fun state(): Int
     /** The codec the server agreed to after the enhanced-RTMP connect handshake (valid once Live). */
     fun negotiatedCodec(): VideoCodecType
+    /** Total bytes written to the socket since session start (smoothed into kbps by the engine). */
+    fun bytesSent(): Long
+    /** Pending egress queue depth — the backpressure signal for connection health. */
+    fun queueDepth(): Int
     fun sendVideoConfig(csd: ByteArray)
     fun sendVideo(annexb: ByteArray, keyframe: Boolean, ptsMs: Long, dtsMs: Long)
     fun sendAudioConfig(sampleRate: Int, channels: Int)

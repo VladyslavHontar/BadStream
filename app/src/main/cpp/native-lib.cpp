@@ -54,6 +54,16 @@ Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeNegotiatedCodec(JN
     return h ? (jint)Self(h)->negotiatedCodec() : 0;
 }
 
+JNIEXPORT jlong JNICALL
+Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeBytesSent(JNIEnv*, jobject, jlong h) {
+    return h ? static_cast<jlong>(Self(h)->bytesSent()) : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeQueueDepth(JNIEnv*, jobject, jlong h) {
+    return h ? static_cast<jint>(Self(h)->queueDepth()) : 0;
+}
+
 JNIEXPORT void JNICALL
 Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeStart(JNIEnv*, jobject, jlong h) {
     if (h) Self(h)->Start();

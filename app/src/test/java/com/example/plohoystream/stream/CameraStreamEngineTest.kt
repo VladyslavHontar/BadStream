@@ -18,7 +18,7 @@ class CameraStreamEngineTest {
         hevcEncoder: Boolean = false,
         hevcMain10: Boolean = false,
         cameraHdr: Boolean = false,
-        startMedia: (RtmpStreamer, VideoFormat) -> Unit = { _, _ -> },
+        startMedia: (RtmpStreamer, VideoFormat, VideoQuality) -> Unit = { _, _, _ -> },
     ) = CameraStreamEngine(
         streamerFactory = { streamer },
         startMedia = startMedia,
@@ -79,15 +79,18 @@ class CameraStreamEngineTest {
     @Test fun requestedHevc_butServerDowngrades_startsMediaWithAvc() = runTest {
         val streamer = FakeRtmpStreamer()
         var captured: VideoFormat? = null
+        var capturedQuality: VideoQuality? = null
         val e = engine(
             streamer, hevcEncoder = true, hevcMain10 = true, cameraHdr = true,
-            startMedia = { _, fmt -> captured = fmt },
+            startMedia = { _, fmt, q -> captured = fmt; capturedQuality = q },
         )
-        e.start(StreamConfig("rtmp://h/app", "key", hdrEnabled = true))
+        val cfg = StreamConfig("rtmp://h/app", "key", hdrEnabled = true)
+        e.start(cfg)
         runCurrent()
         streamer.negotiatedCodecValue = VideoCodecType.AVC // server has no HEVC -> downgrade
         streamer.emitState(2); advanceTimeBy(150); runCurrent()
         assertNotNull(captured)
+        assertEquals(cfg.quality, capturedQuality)
         assertEquals(VideoCodecType.AVC, captured?.codec)
         assertEquals(DynamicRange.SDR, captured?.dynamicRange)
         assertEquals(false, captured?.main10)
@@ -100,7 +103,7 @@ class CameraStreamEngineTest {
         var captured: VideoFormat? = null
         val e = engine(
             streamer, hevcEncoder = true, hevcMain10 = true, cameraHdr = true,
-            startMedia = { _, fmt -> captured = fmt },
+            startMedia = { _, fmt, _ -> captured = fmt },
         )
         e.start(StreamConfig("rtmp://h/app", "key", hdrEnabled = true))
         runCurrent()
@@ -111,5 +114,30 @@ class CameraStreamEngineTest {
         assertEquals(true, e.activeHdr.value)
         e.stop()
         assertEquals(false, e.activeHdr.value)
+    }
+
+    @Test fun live_pollsBytesSentAndQueueDepth_intoStats() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer)
+        // Default StreamConfig.quality has a 6 Mbps videoBitrate -> health target.
+        e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        assertEquals(StreamState.Live, e.state.value)
+        // Simulate ~125 KB sent over the next poll tick at the default 6 Mbps target.
+        streamer.bytesSentValue = 125_000L
+        streamer.queueDepthValue = 200      // > 60% of 256 -> Bad
+        advanceTimeBy(300); runCurrent()
+        assertTrue(e.bitrateKbps.value >= 0)
+        assertEquals(ConnectionHealth.Bad, e.health.value)
+        e.stop()
+    }
+
+    @Test fun forceAvcOverride_requestsAvc_evenWithHevcEncoder() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer, hevcEncoder = true, hevcMain10 = true, cameraHdr = true)
+        e.start(StreamConfig("rtmp://h/app", "key", codecOverride = CodecOverride.ForceAvc))
+        runCurrent()
+        assertEquals(VideoCodecType.AVC, streamer.requestedCodec)
+        e.stop()
     }
 }

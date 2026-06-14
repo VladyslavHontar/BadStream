@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
  */
 class CameraStreamEngine(
     private val streamerFactory: () -> RtmpStreamer,
-    private val startMedia: (RtmpStreamer, VideoFormat) -> Unit,
+    private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality) -> Unit,
     private val stopMedia: () -> Unit,
     private val pollIntervalMs: Long = 250,
     private val hevcEncoder: Boolean = false,
@@ -44,6 +44,18 @@ class CameraStreamEngine(
     private val _activeHdr = MutableStateFlow(false)
     override val activeHdr: StateFlow<Boolean> = _activeHdr.asStateFlow()
 
+    private val _bitrateKbps = MutableStateFlow(0)
+    override val bitrateKbps: StateFlow<Int> = _bitrateKbps.asStateFlow()
+
+    private val _health = MutableStateFlow(ConnectionHealth.Good)
+    override val health: StateFlow<ConnectionHealth> = _health.asStateFlow()
+
+    private val _audioLevel = MutableStateFlow(0f)
+    override val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
+
+    private val bitrateMeter = BitrateMeter()
+    private val queueCapacity = 256   // mirrors native MediaQueue capacity
+
     private var streamer: RtmpStreamer? = null
     private var pollJob: Job? = null
     @Volatile private var mediaStarted = false
@@ -51,12 +63,18 @@ class CameraStreamEngine(
     /** Lets the media-setup lambda publish the encoder surface back to the viewfinder. */
     fun publishEncoderSurface(s: Surface?) { _encoderSurface.value = s }
 
+    /** Lets the media-setup lambda forward AudioEncoder.onLevel into the engine's flow. */
+    fun publishAudioLevel(level: Float) { _audioLevel.value = level }
+
     override fun start(config: StreamConfig) {
         val endpoint = runCatching { RtmpEndpoint.parse(config.rtmpUrl, config.streamKey) }
             .getOrElse { _state.value = StreamState.Error(it.message ?: "Bad URL"); return }
 
         mediaStarted = false
-        val requested = CodecSelector.select(hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled)
+        val quality = config.quality
+        val requested = resolveRequest(
+            config.codecOverride, hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled,
+        )
 
         _state.value = StreamState.Connecting
         val s = streamerFactory().also { streamer = it }
@@ -76,10 +94,18 @@ class CameraStreamEngine(
                             val negotiated = s.negotiatedCodec()
                             val actual = if (negotiated == VideoCodecType.HEVC) requested
                                          else VideoFormat(VideoCodecType.AVC, main10 = false, DynamicRange.SDR)
-                            startMedia(s, actual)
+                            startMedia(s, actual, quality)
                             _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
                         }
                         _state.value = StreamState.Live
+                        val kbps = bitrateMeter.update(s.bytesSent(), System.currentTimeMillis())
+                        _bitrateKbps.value = kbps
+                        _health.value = deriveHealth(
+                            queueDepth = s.queueDepth(),
+                            queueCapacity = queueCapacity,
+                            actualKbps = kbps,
+                            targetKbps = quality.videoBitrate / 1000,
+                        )
                     }
                     3 -> { _state.value = StreamState.Error("Stream rejected"); break }
                     0 -> { _state.value = StreamState.Idle; break }
@@ -97,6 +123,9 @@ class CameraStreamEngine(
         mediaStarted = false
         _encoderSurface.value = null
         _activeHdr.value = false
+        _bitrateKbps.value = 0
+        _health.value = ConnectionHealth.Good
+        _audioLevel.value = 0f
         streamer?.stop(); streamer = null
         _state.value = StreamState.Idle
     }
