@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
  */
 class CameraStreamEngine(
     private val streamerFactory: () -> RtmpStreamer,
-    private val startMedia: (RtmpStreamer, VideoFormat) -> Unit,
+    private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality) -> Unit,
     private val stopMedia: () -> Unit,
     private val pollIntervalMs: Long = 250,
     private val hevcEncoder: Boolean = false,
@@ -31,7 +31,6 @@ class CameraStreamEngine(
     private val width: Int = 1920,
     private val height: Int = 1080,
     private val fps: Int = 30,
-    private val videoBitrate: Int = 6_000_000,
     private val sampleRate: Int = 44100,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
 ) : VideoStreamEngine {
@@ -72,6 +71,7 @@ class CameraStreamEngine(
             .getOrElse { _state.value = StreamState.Error(it.message ?: "Bad URL"); return }
 
         mediaStarted = false
+        val quality = config.quality
         val requested = resolveRequest(
             config.codecOverride, hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled,
         )
@@ -94,7 +94,7 @@ class CameraStreamEngine(
                             val negotiated = s.negotiatedCodec()
                             val actual = if (negotiated == VideoCodecType.HEVC) requested
                                          else VideoFormat(VideoCodecType.AVC, main10 = false, DynamicRange.SDR)
-                            startMedia(s, actual)
+                            startMedia(s, actual, quality)
                             _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
                         }
                         _state.value = StreamState.Live
@@ -104,7 +104,7 @@ class CameraStreamEngine(
                             queueDepth = s.queueDepth(),
                             queueCapacity = queueCapacity,
                             actualKbps = kbps,
-                            targetKbps = videoBitrate / 1000,
+                            targetKbps = quality.videoBitrate / 1000,
                         )
                     }
                     3 -> { _state.value = StreamState.Error("Stream rejected"); break }

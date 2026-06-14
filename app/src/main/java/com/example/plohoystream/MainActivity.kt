@@ -46,16 +46,17 @@ class MainActivity : ComponentActivity() {
                 hevcEncoder = hevcCaps.encoder,
                 hevcMain10 = hevcCaps.main10,
                 cameraHdr = anyCameraHdr,
-                startMedia = { streamer, fmt ->
+                startMedia = { streamer, fmt, quality ->
                     StreamForegroundService.start(appCtx)
                     val v = VideoEncoder(
-                        width = 1920, height = 1080, fps = 30, bitRate = 6_000_000,
+                        width = quality.width, height = quality.height, fps = quality.fps,
+                        bitRate = quality.videoBitrate,
                         format = fmt,
                         onConfig = { csd -> streamer.sendVideoConfig(csd) },
                         onFrame = { annexb, key, pts -> streamer.sendVideo(annexb, key, pts, pts) },
                     )
                     val a = AudioEncoder(
-                        sampleRate = 44100, channels = 2,
+                        sampleRate = 44100, channels = 2, bitRate = quality.audioBitrate,
                         onFrame = { aac, pts -> streamer.sendAudio(aac, pts) },
                         onLevel = { lvl -> eng.publishAudioLevel(lvl) },
                     )
