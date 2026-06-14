@@ -28,3 +28,14 @@ TEST(MediaQueue, CloseUnblocksPop) {
     MediaItem out;
     EXPECT_FALSE(q.Pop(out)); // closed + empty -> false, no hang
 }
+
+TEST(MediaQueue, SizeReflectsPending) {
+    MediaQueue q(8);
+    EXPECT_EQ(q.size(), 0u);
+    q.Push(MediaItem{MediaItem::Video, {1}, false, 0, 0});
+    q.Push(MediaItem{MediaItem::Video, {2}, false, 0, 0});
+    EXPECT_EQ(q.size(), 2u);
+    MediaItem out;
+    ASSERT_TRUE(q.Pop(out));
+    EXPECT_EQ(q.size(), 1u);
+}

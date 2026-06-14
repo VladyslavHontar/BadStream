@@ -50,6 +50,11 @@ public:
         return dropped_;
     }
 
+    size_t size() const {
+        std::unique_lock<std::mutex> lk(m_);
+        return q_.size();
+    }
+
 private:
     mutable std::mutex m_;
     std::condition_variable cv_;
