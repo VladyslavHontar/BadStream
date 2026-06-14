@@ -1,6 +1,7 @@
 package com.example.plohoystream
 
 import android.os.Bundle
+import android.os.Environment
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
@@ -16,6 +17,7 @@ import com.example.plohoystream.media.CodecCapabilities
 import com.example.plohoystream.stream.AudioEncoder
 import com.example.plohoystream.stream.CameraStreamEngine
 import com.example.plohoystream.stream.CodecSelector
+import com.example.plohoystream.stream.NativeRecorder
 import com.example.plohoystream.stream.NativeRtmpStreamer
 import com.example.plohoystream.stream.StreamEngine
 import com.example.plohoystream.stream.VideoEncoder
@@ -47,33 +49,47 @@ class MainActivity : ComponentActivity() {
         engine = run {
             var video: VideoEncoder? = null
             var audio: AudioEncoder? = null
+            var recorder: NativeRecorder? = null
             lateinit var eng: CameraStreamEngine
             eng = CameraStreamEngine(
                 streamerFactory = { NativeRtmpStreamer() },
                 hevcEncoder = hevcCaps.encoder,
                 hevcMain10 = hevcCaps.main10,
                 cameraHdr = anyCameraHdr,
-                startMedia = { streamer, fmt, quality ->
+                startMedia = { streamer, fmt, quality, record ->
                     StreamForegroundService.start(appCtx)
+                    // When recording, tap the SAME encoded callbacks (no second encoder): fan
+                    // onConfig/onFrame out to both the RTMP streamer and the native fMP4 recorder.
+                    val rec: NativeRecorder? = if (record) {
+                        val dir = appCtx.getExternalFilesDir(Environment.DIRECTORY_MOVIES)
+                        val path = "${dir?.absolutePath}/Recording_${System.currentTimeMillis()}.mp4"
+                        NativeRecorder().also {
+                            it.start(path, fmt.codec.nativeFlag, quality.width, quality.height, quality.fps, 44100, 2)
+                            it.writeAudioConfig(44100, 2)
+                        }
+                    } else null
                     val v = VideoEncoder(
                         width = quality.width, height = quality.height, fps = quality.fps,
                         bitRate = quality.videoBitrate,
                         format = fmt,
-                        onConfig = { csd -> streamer.sendVideoConfig(csd) },
-                        onFrame = { annexb, key, pts -> streamer.sendVideo(annexb, key, pts, pts) },
+                        onConfig = { csd -> streamer.sendVideoConfig(csd); rec?.writeVideoConfig(csd) },
+                        onFrame = { annexb, key, pts ->
+                            streamer.sendVideo(annexb, key, pts, pts); rec?.writeVideo(annexb, key, pts)
+                        },
                     )
                     val a = AudioEncoder(
                         sampleRate = 44100, channels = 2, bitRate = quality.audioBitrate,
-                        onFrame = { aac, pts -> streamer.sendAudio(aac, pts) },
+                        onFrame = { aac, pts -> streamer.sendAudio(aac, pts); rec?.writeAudio(aac, pts) },
                         onLevel = { lvl -> eng.publishAudioLevel(lvl) },
                     )
                     streamer.sendAudioConfig(44100, 2)
                     v.start(); a.start()
-                    video = v; audio = a
+                    video = v; audio = a; recorder = rec
                     eng.publishEncoderSurface(v.inputSurface)
                 },
                 stopMedia = {
                     video?.stop(); audio?.stop(); video = null; audio = null
+                    recorder?.stop(); recorder = null
                     StreamForegroundService.stop(appCtx)
                 },
             )

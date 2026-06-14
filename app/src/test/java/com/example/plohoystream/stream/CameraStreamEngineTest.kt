@@ -18,7 +18,7 @@ class CameraStreamEngineTest {
         hevcEncoder: Boolean = false,
         hevcMain10: Boolean = false,
         cameraHdr: Boolean = false,
-        startMedia: (RtmpStreamer, VideoFormat, VideoQuality) -> Unit = { _, _, _ -> },
+        startMedia: (RtmpStreamer, VideoFormat, VideoQuality, Boolean) -> Unit = { _, _, _, _ -> },
     ) = CameraStreamEngine(
         streamerFactory = { streamer },
         startMedia = startMedia,
@@ -83,7 +83,7 @@ class CameraStreamEngineTest {
         var capturedQuality: VideoQuality? = null
         val e = engine(
             streamer, hevcEncoder = true, hevcMain10 = true, cameraHdr = true,
-            startMedia = { _, fmt, q -> captured = fmt; capturedQuality = q },
+            startMedia = { _, fmt, q, _ -> captured = fmt; capturedQuality = q },
         )
         val cfg = StreamConfig("rtmp://h/app", "key", hdrEnabled = true)
         e.start(cfg)
@@ -104,7 +104,7 @@ class CameraStreamEngineTest {
         var captured: VideoFormat? = null
         val e = engine(
             streamer, hevcEncoder = true, hevcMain10 = true, cameraHdr = true,
-            startMedia = { _, fmt, _ -> captured = fmt },
+            startMedia = { _, fmt, _, _ -> captured = fmt },
         )
         e.start(StreamConfig("rtmp://h/app", "key", hdrEnabled = true))
         runCurrent()
@@ -115,6 +115,17 @@ class CameraStreamEngineTest {
         assertEquals(true, e.activeHdr.value)
         e.stop()
         assertEquals(false, e.activeHdr.value)
+    }
+
+    @Test fun recordWhileStreaming_isPassedToStartMedia() = runTest {
+        val streamer = FakeRtmpStreamer()
+        var capturedRecord: Boolean? = null
+        val e = engine(streamer, startMedia = { _, _, _, record -> capturedRecord = record })
+        e.start(StreamConfig("rtmp://h/app", "key", recordWhileStreaming = true))
+        runCurrent()
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        assertEquals(true, capturedRecord)
+        e.stop()
     }
 
     @Test fun live_pollsBytesSentAndQueueDepth_intoStats() = runTest {
