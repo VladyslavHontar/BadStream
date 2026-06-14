@@ -104,3 +104,66 @@ TEST(StreamSession, StopInterruptsBlockingRead) {
     EXPECT_LT(ms, 1000);
     EXPECT_EQ(s.state(), ps::SessionState::Idle);
 }
+
+// Walk RTMP chunks (every message is fmt0-led per ChunkEncode) and return each message's
+// type, chunk timestamp, and reassembled payload.
+namespace {
+struct Msg { uint8_t type; uint32_t ts; Bytes payload; };
+std::vector<Msg> ParseMessages(const Bytes& w, uint32_t chunkSize = 4096) {
+    std::vector<Msg> out;
+    size_t i = 0, n = w.size();
+    while (i + 12 <= n) {
+        if ((w[i] >> 6) != 0) break;                       // expect a fmt0 chunk
+        uint32_t ts  = (uint32_t(w[i+1])<<16)|(uint32_t(w[i+2])<<8)|w[i+3];
+        uint32_t len = (uint32_t(w[i+4])<<16)|(uint32_t(w[i+5])<<8)|w[i+6];
+        uint8_t  type = w[i+7];
+        i += 12;
+        bool ext = (ts == 0xFFFFFF);
+        if (ext) { if (i+4 > n) break; ts = (uint32_t(w[i])<<24)|(uint32_t(w[i+1])<<16)|(uint32_t(w[i+2])<<8)|w[i+3]; i += 4; }
+        Bytes payload; uint32_t remaining = len; bool first = true;
+        while (remaining > 0) {
+            if (!first) { if (i+1 > n) break; ++i; if (ext) { if (i+4 > n) break; i += 4; } }
+            uint32_t take = std::min(chunkSize, remaining);
+            if (i + take > n) break;
+            payload.insert(payload.end(), w.begin()+i, w.begin()+i+take);
+            i += take; remaining -= take; first = false;
+        }
+        out.push_back({type, ts, std::move(payload)});
+    }
+    return out;
+}
+}
+
+// Encoders stamp samples with a boot-based clock (huge); the session must rebase the stream
+// to start near 0 while preserving the relative offset between frames.
+TEST(StreamSession, NormalizesTimestampsToStreamStart) {
+    auto owned = std::make_unique<StubTransport>();
+    StubTransport* stub = owned.get();
+    PreloadPublishHandshake(*stub);
+    StreamParams p; p.host="h"; p.app="app"; p.streamKey="k"; p.tcUrl="rtmp://h/app";
+    auto held = std::make_shared<std::unique_ptr<StubTransport>>(std::move(owned));
+    StreamSession s(p, [held]() mutable -> std::unique_ptr<Transport> { return std::move(*held); });
+    s.Start();
+    for (int i = 0; i < 200 && s.state() != SessionState::Live; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ASSERT_EQ(s.state(), SessionState::Live);
+
+    stub->clear();
+    const uint32_t T = 5000000;   // huge boot-based base timestamp
+    s.SendVideoConfig({0,0,0,1, 0x67,0x42,0x00,0x1e, 0,0,0,1, 0x68,0xce,0x3c,0x80});
+    s.SendVideo({0,0,0,1, 0x65, 0x01}, true, T, T);            // first frame -> establishes base
+    s.SendVideo({0,0,0,1, 0x41, 0x02}, false, T + 100, T + 100); // +100 ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+    // Capture the wire bytes BEFORE Stop() — Stop() resets (destroys) the transport.
+    Bytes wire = stub->written();
+    s.Stop();
+
+    std::vector<uint32_t> frameTs;
+    for (const auto& m : ParseMessages(wire))
+        if (m.type == 0x09 && m.payload.size() >= 2 && m.payload[1] == 0x01) // video NALU (not seq header)
+            frameTs.push_back(m.ts);
+    ASSERT_EQ(frameTs.size(), 2u);
+    EXPECT_EQ(frameTs[0], 0u);     // rebased to stream start
+    EXPECT_EQ(frameTs[1], 100u);   // relative offset preserved
+}

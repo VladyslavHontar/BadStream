@@ -56,7 +56,14 @@ void StreamSession::run() {
     }
     state_ = SessionState::Live;
 
+    // Encoders timestamp samples with a boot-based monotonic clock (millions of ms), so the
+    // stream would start at a huge timestamp and ride RTMP's extended-timestamp path from
+    // frame 1. Subtract the first media sample's timestamp (shared across audio + video, so
+    // their relative offset is preserved) to make the stream start near 0.
     MediaItem item;
+    bool haveBase = false;
+    uint32_t baseMs = 0;
+    auto rebase = [&](uint32_t ts) -> uint32_t { return ts >= baseMs ? ts - baseMs : 0; };
     while (queue_.Pop(item)) {
         switch (item.kind) {
             case MediaItem::VideoConfig: {
@@ -64,15 +71,19 @@ void StreamSession::run() {
                 if (!sps.empty() && !pps.empty()) client.SendVideoConfig(sps, pps);
                 break;
             }
-            case MediaItem::Video:
-                client.SendVideo(item.data, item.keyframe, item.ptsMs, item.dtsMs);
+            case MediaItem::Video: {
+                if (!haveBase) { baseMs = item.dtsMs; haveBase = true; }
+                client.SendVideo(item.data, item.keyframe, rebase(item.ptsMs), rebase(item.dtsMs));
                 break;
+            }
             case MediaItem::AudioConfig:
                 client.SendAudioConfig(item.sampleRate, item.channels);
                 break;
-            case MediaItem::Audio:
-                client.SendAudio(item.data, item.ptsMs);
+            case MediaItem::Audio: {
+                if (!haveBase) { baseMs = item.ptsMs; haveBase = true; }
+                client.SendAudio(item.data, rebase(item.ptsMs));
                 break;
+            }
         }
         if (!transport_->connected()) { state_ = SessionState::Error; break; }
     }
