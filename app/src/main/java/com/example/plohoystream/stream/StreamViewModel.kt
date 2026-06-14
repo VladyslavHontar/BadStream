@@ -30,7 +30,7 @@ class StreamViewModel(
     val activeHdr: StateFlow<Boolean> =
         (engine as? VideoStreamEngine)?.activeHdr ?: MutableStateFlow(false)
 
-    private var liveStartMs: Long = 0L
+    @Volatile private var liveStartMs: Long = 0L
 
     init {
         viewModelScope.launch {
@@ -68,7 +68,9 @@ class StreamViewModel(
 
     fun goLive() {
         val s = _uiState.value
-        if (s.canGoLive) engine.start(
+        if (!s.canGoLive) return
+        _uiState.update { it.copy(stream = StreamState.Connecting) }   // optimistic: closes double-tap window
+        engine.start(
             StreamConfig(
                 rtmpUrl = s.url,
                 streamKey = s.key,
