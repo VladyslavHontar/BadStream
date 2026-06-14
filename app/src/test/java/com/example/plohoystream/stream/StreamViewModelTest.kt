@@ -5,6 +5,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -63,5 +64,41 @@ class StreamViewModelTest {
         advanceUntilIdle()
         assertEquals(StreamConfig("rtmp://h/app", "k", hdrEnabled = true), engine.lastConfig)
         assertTrue(vm.uiState.value.hdrAvailable)
+    }
+
+    @Test fun setQualityAndCodec_thenGoLive_buildsRicherConfig() = runTest {
+        val engine = FakeStreamEngine()
+        val vm = StreamViewModel(engine)
+        vm.setUrl("rtmp://h/app"); vm.setKey("k")
+        vm.setQuality(VideoQuality(1280, 720, 30, 3_500_000, 128_000))
+        vm.setCodecOverride(CodecOverride.ForceHevc)
+        vm.goLive()
+        advanceUntilIdle()
+        assertEquals(
+            StreamConfig("rtmp://h/app", "k", quality = VideoQuality(1280, 720, 30, 3_500_000, 128_000), codecOverride = CodecOverride.ForceHevc),
+            engine.lastConfig,
+        )
+    }
+
+    @Test fun panelOpenClose_andRoute_updateUiState() = runTest {
+        val vm = StreamViewModel(FakeStreamEngine())
+        vm.openSettings()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.panelOpen)
+        vm.navigateSettings(com.example.plohoystream.ui.settings.SettingsRoute.Video)
+        assertEquals(com.example.plohoystream.ui.settings.SettingsRoute.Video, vm.uiState.value.settingsRoute)
+        vm.closeSettings()
+        assertFalse(vm.uiState.value.panelOpen)
+    }
+
+    @Test fun engineLiveStats_propagateToUiState() = runTest {
+        val engine = FakeStreamEngine()
+        val vm = StreamViewModel(engine)
+        advanceUntilIdle()
+        engine.emitBitrate(5500)
+        engine.emitHealth(ConnectionHealth.Warn)
+        advanceUntilIdle()
+        assertEquals(5500, vm.uiState.value.bitrateKbps)
+        assertEquals(ConnectionHealth.Warn, vm.uiState.value.health)
     }
 }
