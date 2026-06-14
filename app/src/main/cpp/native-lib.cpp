@@ -37,15 +37,21 @@ extern "C" {
 JNIEXPORT jlong JNICALL
 Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeCreate(
         JNIEnv* env, jobject, jstring host, jstring app, jstring key, jstring tcUrl,
-        jint port, jint width, jint height, jint fps, jint sampleRate) {
+        jint port, jint width, jint height, jint fps, jint sampleRate, jint codec) {
     StreamParams p;
     p.host = ToStr(env, host); p.app = ToStr(env, app);
     p.streamKey = ToStr(env, key); p.tcUrl = ToStr(env, tcUrl);
     p.port = static_cast<uint16_t>(port);
     p.width = width; p.height = height; p.fps = static_cast<double>(fps);
     p.sampleRate = sampleRate;
-    auto* s = new StreamSession(p, [] { return std::unique_ptr<Transport>(new TcpTransport()); });
+    auto* s = new StreamSession(p, [] { return std::unique_ptr<Transport>(new TcpTransport()); },
+                                static_cast<Codec>(codec));
     return reinterpret_cast<jlong>(s);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeNegotiatedCodec(JNIEnv*, jobject, jlong h) {
+    return h ? (jint)Self(h)->negotiatedCodec() : 0;
 }
 
 JNIEXPORT void JNICALL

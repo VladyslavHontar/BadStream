@@ -41,6 +41,7 @@ void StreamSession::run() {
         state_ = SessionState::Error; running_ = false; return;
     }
     RtmpClient client(*transport_, params_);
+    client.RequestCodec(requestedCodec_);
     client.Begin();
 
     uint8_t buf[8192];
@@ -55,6 +56,7 @@ void StreamSession::run() {
         state_ = SessionState::Error; running_ = false; return;
     }
     state_ = SessionState::Live;
+    negotiated_.store(client.negotiatedCodec());
 
     // Encoders timestamp samples with a boot-based monotonic clock (millions of ms), so the
     // stream would start at a huge timestamp and ride RTMP's extended-timestamp path from
@@ -67,8 +69,7 @@ void StreamSession::run() {
     while (queue_.Pop(item)) {
         switch (item.kind) {
             case MediaItem::VideoConfig: {
-                Bytes sps, pps; SplitSpsPps(item.data, sps, pps);
-                if (!sps.empty() && !pps.empty()) client.SendVideoConfig(sps, pps);
+                client.SendVideoConfig(item.data);
                 break;
             }
             case MediaItem::Video: {
