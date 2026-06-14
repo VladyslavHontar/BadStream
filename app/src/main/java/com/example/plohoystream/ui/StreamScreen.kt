@@ -107,8 +107,15 @@ private fun Viewfinder(viewModel: StreamViewModel) {
         }
     }
 
+    // Preview aspect in portrait display orientation (landscape sensor -> height/width).
+    val previewAspect = config?.previewSize?.let { it.height.toFloat() / it.width } ?: (9f / 16f)
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        CameraPreview(modifier = Modifier.fillMaxSize(), onSurface = { surface = it })
+        CameraPreview(
+            modifier = Modifier.fillMaxSize(),
+            aspectRatio = previewAspect,
+            onSurface = { surface = it },
+        )
 
         // Top status bar.
         Row(

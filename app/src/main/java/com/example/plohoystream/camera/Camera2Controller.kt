@@ -193,7 +193,10 @@ class Camera2Controller(context: Context) : CameraController {
         device = null
         openedCameraId = null
         opening = false
-        targets = emptyList()
+        // NOTE: do NOT clear `targets` here. On a front/back flip, start() sets the new
+        // targets and then calls closeCamera() before reopening; the reopened camera's
+        // onOpened -> reconfigure() needs those targets. start() always sets targets fresh,
+        // so leaving stale targets here is harmless when there is no device.
     }
 
     private companion object {
