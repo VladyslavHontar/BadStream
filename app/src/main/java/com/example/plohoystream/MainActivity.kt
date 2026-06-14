@@ -13,6 +13,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.plohoystream.camera.CameraEnumerator
 import com.example.plohoystream.data.DataStoreSettingsStore
 import com.example.plohoystream.media.CodecCapabilities
+import android.os.SystemClock
 import com.example.plohoystream.stream.AudioEncoder
 import com.example.plohoystream.stream.CameraStreamEngine
 import com.example.plohoystream.stream.CodecSelector
@@ -55,15 +56,21 @@ class MainActivity : ComponentActivity() {
                 cameraHdr = anyCameraHdr,
                 startMedia = { streamer, fmt, quality ->
                     StreamForegroundService.start(appCtx)
+                    // Capture both clocks at the same instant as the shared epoch (M2-B A/V sync).
+                    val nanoT0 = System.nanoTime()
+                    val bootT0 = SystemClock.elapsedRealtimeNanos()
                     val v = VideoEncoder(
                         width = quality.width, height = quality.height, fps = quality.fps,
                         bitRate = quality.videoBitrate,
                         format = fmt,
+                        nanoT0 = nanoT0,
+                        bootT0 = bootT0,
                         onConfig = { csd -> streamer.sendVideoConfig(csd) },
                         onFrame = { annexb, key, pts -> streamer.sendVideo(annexb, key, pts, pts) },
                     )
                     val a = AudioEncoder(
                         sampleRate = 44100, channels = 2, bitRate = quality.audioBitrate,
+                        nanoT0 = nanoT0,
                         onFrame = { aac, pts -> streamer.sendAudio(aac, pts) },
                         onLevel = { lvl -> eng.publishAudioLevel(lvl) },
                     )
