@@ -25,6 +25,10 @@ Bytes BuildConnectCommand(const StreamParams& p, int txn) {
 }
 
 void RtmpClient::Begin() {
+    codec_ = (requestedCodec_ == Codec::Hevc)
+        ? std::unique_ptr<VideoCodec>(new HevcCodec())
+        : std::unique_ptr<VideoCodec>(new AvcCodec());
+    negotiatedCodec_ = requestedCodec_;
     RtmpHandshake h; t_.Write(h.BuildC0C1());
     state_ = RtmpState::HandshakeSent;
 }
@@ -85,13 +89,18 @@ void RtmpClient::OnBytes(const Bytes& d) {
         }
     }
 }
-void RtmpClient::SendVideoConfig(const Bytes& sps, const Bytes& pps) {
-    Bytes body = FlvVideoSeqHeader(BuildAvcC(sps, pps));
+void RtmpClient::SendVideoConfig(const Bytes& csd) {
+    Bytes body = codec_->SequenceHeader(csd);
     t_.Write(ChunkEncode(5, 0x09, streamId_, 0, body, outChunkSize_));
+}
+void RtmpClient::SendVideoConfig(const Bytes& sps, const Bytes& pps) {
+    Bytes csd; csd.insert(csd.end(), {0,0,0,1}); csd.insert(csd.end(), sps.begin(), sps.end());
+    csd.insert(csd.end(), {0,0,0,1}); csd.insert(csd.end(), pps.begin(), pps.end());
+    SendVideoConfig(csd);
 }
 void RtmpClient::SendVideo(const Bytes& annexb, bool keyframe, uint32_t ptsMs, uint32_t dtsMs) {
     uint32_t cts = ptsMs >= dtsMs ? ptsMs - dtsMs : 0;
-    Bytes body = FlvVideoFrame(AnnexBToAvcc(annexb), keyframe, cts);
+    Bytes body = codec_->Frame(annexb, keyframe, cts);
     t_.Write(ChunkEncode(5, 0x09, streamId_, dtsMs, body, outChunkSize_));
 }
 void RtmpClient::SendAudioConfig(int sampleRate, int channels) {
