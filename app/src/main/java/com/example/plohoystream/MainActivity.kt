@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
                     val a = AudioEncoder(
                         sampleRate = 44100, channels = 2,
                         onFrame = { aac, pts -> streamer.sendAudio(aac, pts) },
+                        onLevel = { lvl -> eng.publishAudioLevel(lvl) },
                     )
                     streamer.sendAudioConfig(44100, 2)
                     v.start(); a.start()

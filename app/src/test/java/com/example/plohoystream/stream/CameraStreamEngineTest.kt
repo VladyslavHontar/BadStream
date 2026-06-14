@@ -18,6 +18,7 @@ class CameraStreamEngineTest {
         hevcEncoder: Boolean = false,
         hevcMain10: Boolean = false,
         cameraHdr: Boolean = false,
+        targetVideoBitrate: Int = 6_000_000,
         startMedia: (RtmpStreamer, VideoFormat) -> Unit = { _, _ -> },
     ) = CameraStreamEngine(
         streamerFactory = { streamer },
@@ -27,6 +28,7 @@ class CameraStreamEngineTest {
         hevcEncoder = hevcEncoder,
         hevcMain10 = hevcMain10,
         cameraHdr = cameraHdr,
+        videoBitrate = targetVideoBitrate,
     )
 
     @Test fun start_movesToConnecting_thenLiveWhenNativeReports() = runTest {
@@ -111,5 +113,20 @@ class CameraStreamEngineTest {
         assertEquals(true, e.activeHdr.value)
         e.stop()
         assertEquals(false, e.activeHdr.value)
+    }
+
+    @Test fun live_pollsBytesSentAndQueueDepth_intoStats() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer, targetVideoBitrate = 6_000_000)
+        e.start(StreamConfig("rtmp://h/app", "key")); runCurrent()
+        streamer.emitState(2); advanceTimeBy(150); runCurrent()
+        assertEquals(StreamState.Live, e.state.value)
+        // Simulate ~125 KB sent over the next poll tick at the default 6 Mbps target.
+        streamer.bytesSentValue = 125_000L
+        streamer.queueDepthValue = 200      // > 60% of 256 -> Bad
+        advanceTimeBy(300); runCurrent()
+        assertTrue(e.bitrateKbps.value >= 0)
+        assertEquals(ConnectionHealth.Bad, e.health.value)
+        e.stop()
     }
 }

@@ -31,6 +31,7 @@ class CameraStreamEngine(
     private val width: Int = 1920,
     private val height: Int = 1080,
     private val fps: Int = 30,
+    private val videoBitrate: Int = 6_000_000,
     private val sampleRate: Int = 44100,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
 ) : VideoStreamEngine {
@@ -44,12 +45,27 @@ class CameraStreamEngine(
     private val _activeHdr = MutableStateFlow(false)
     override val activeHdr: StateFlow<Boolean> = _activeHdr.asStateFlow()
 
+    private val _bitrateKbps = MutableStateFlow(0)
+    override val bitrateKbps: StateFlow<Int> = _bitrateKbps.asStateFlow()
+
+    private val _health = MutableStateFlow(ConnectionHealth.Good)
+    override val health: StateFlow<ConnectionHealth> = _health.asStateFlow()
+
+    private val _audioLevel = MutableStateFlow(0f)
+    override val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
+
+    private val bitrateMeter = BitrateMeter()
+    private val queueCapacity = 256   // mirrors native MediaQueue capacity
+
     private var streamer: RtmpStreamer? = null
     private var pollJob: Job? = null
     @Volatile private var mediaStarted = false
 
     /** Lets the media-setup lambda publish the encoder surface back to the viewfinder. */
     fun publishEncoderSurface(s: Surface?) { _encoderSurface.value = s }
+
+    /** Lets the media-setup lambda forward AudioEncoder.onLevel into the engine's flow. */
+    fun publishAudioLevel(level: Float) { _audioLevel.value = level }
 
     override fun start(config: StreamConfig) {
         val endpoint = runCatching { RtmpEndpoint.parse(config.rtmpUrl, config.streamKey) }
@@ -80,6 +96,14 @@ class CameraStreamEngine(
                             _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
                         }
                         _state.value = StreamState.Live
+                        val kbps = bitrateMeter.update(s.bytesSent(), System.currentTimeMillis())
+                        _bitrateKbps.value = kbps
+                        _health.value = deriveHealth(
+                            queueDepth = s.queueDepth(),
+                            queueCapacity = queueCapacity,
+                            actualKbps = kbps,
+                            targetKbps = videoBitrate / 1000,
+                        )
                     }
                     3 -> { _state.value = StreamState.Error("Stream rejected"); break }
                     0 -> { _state.value = StreamState.Idle; break }
@@ -97,6 +121,9 @@ class CameraStreamEngine(
         mediaStarted = false
         _encoderSurface.value = null
         _activeHdr.value = false
+        _bitrateKbps.value = 0
+        _health.value = ConnectionHealth.Good
+        _audioLevel.value = 0f
         streamer?.stop(); streamer = null
         _state.value = StreamState.Idle
     }
