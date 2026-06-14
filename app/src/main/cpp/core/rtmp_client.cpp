@@ -102,6 +102,9 @@ void RtmpClient::OnBytes(const Bytes& d) {
         if (name == "_error") {
             state_ = RtmpState::Error;
         } else if (name == "_result" && state_ == RtmpState::ConnectSent) {
+            // Some servers reject the connection with a _result carrying level=="error" (e.g.
+            // NetConnection.Connect.Rejected) instead of an _error command. Treat it as terminal.
+            if (Amf0::FindStringValue(payload, "level") == "error") { state_ = RtmpState::Error; continue; }
             bool serverHevc = ServerAdvertisesHevc(payload);
             negotiatedCodec_ = (requestedCodec_ == Codec::Hevc && serverHevc) ? Codec::Hevc : Codec::Avc;
             codec_ = (negotiatedCodec_ == Codec::Hevc)

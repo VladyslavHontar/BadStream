@@ -41,7 +41,10 @@ void StreamSession::SendAudio(const Bytes& aac, uint32_t pts) {
 
 void StreamSession::run() {
     if (!transport_ || !transport_->Connect(params_.host, params_.port)) {
-        state_ = SessionState::Dropped; running_ = false; return;   // couldn't connect -> transient
+        // exchange(false) returns true only for a genuine failure; if a user Stop() already
+        // cleared running_, skip the Dropped flash (Stop() will set Idle).
+        if (running_.exchange(false)) state_ = SessionState::Dropped;   // couldn't connect -> transient
+        return;
     }
     RtmpClient client(*transport_, params_);
     client.RequestCodec(requestedCodec_);
@@ -53,7 +56,10 @@ void StreamSession::run() {
            client.state() != RtmpState::Publishing &&
            client.state() != RtmpState::Error) {
         int n = transport_->Read(buf, sizeof(buf));
-        if (n <= 0) { state_ = SessionState::Dropped; running_ = false; return; }  // socket drop
+        // A user Stop() closes the socket to interrupt this blocking Read; running_ is already
+        // false by then, so don't surface that as Dropped (which would trigger a spurious
+        // reconnect). exchange(false) returns true only for a genuine network drop.
+        if (n <= 0) { if (running_.exchange(false)) state_ = SessionState::Dropped; return; }
         client.OnBytes(Bytes(buf, buf + n));
     }
     if (!running_.load()) return;                            // user Stop() during handshake

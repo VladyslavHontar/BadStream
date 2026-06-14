@@ -193,9 +193,20 @@ TEST(StreamSession, BytesSentIncreasesAfterLive) {
     s.Stop();
 }
 
-// A _result whose info object carries level=="error" — a server rejection at connect.
+// An `_error` command — a server rejection at connect (e.g. nginx-rtmp style).
 static Bytes SessMakeConnectError() {
     Bytes b; Amf0::String(b,"_error"); Amf0::Number(b,1); Amf0::Null(b);
+    Amf0::ObjectBegin(b);
+    Amf0::Key(b,"level"); Amf0::String(b,"error");
+    Amf0::Key(b,"code");  Amf0::String(b,"NetConnection.Connect.Rejected");
+    Amf0::ObjectEnd(b);
+    return SessMakeCommand(b);
+}
+
+// A `_result` whose info object carries level=="error" — the other common connect-rejection
+// shape (some servers reject this way instead of via an `_error` command).
+static Bytes SessMakeConnectResultError() {
+    Bytes b; Amf0::String(b,"_result"); Amf0::Number(b,1); Amf0::Null(b);
     Amf0::ObjectBegin(b);
     Amf0::Key(b,"level"); Amf0::String(b,"error");
     Amf0::Key(b,"code");  Amf0::String(b,"NetConnection.Connect.Rejected");
@@ -209,6 +220,22 @@ TEST(StreamSession, ConnectRejectionEndsRejected) {
     Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
     stub->FeedIncoming(s0s1s2);
     stub->FeedIncoming(SessMakeConnectError());          // server rejects connect
+    StreamParams p; p.host="h"; p.app="app"; p.streamKey="k"; p.tcUrl="rtmp://h/app";
+    auto held = std::make_shared<std::unique_ptr<StubTransport>>(std::move(owned));
+    StreamSession s(p, [held]() mutable -> std::unique_ptr<Transport> { return std::move(*held); });
+    s.Start();
+    for (int i = 0; i < 200 && s.state() == SessionState::Connecting; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    EXPECT_EQ(s.state(), SessionState::Rejected);
+    s.Stop();
+}
+
+TEST(StreamSession, ConnectResultLevelErrorEndsRejected) {
+    auto owned = std::make_unique<StubTransport>();
+    StubTransport* stub = owned.get();
+    Bytes s0s1s2(1537 + 1536, 0); s0s1s2[0] = 0x03;
+    stub->FeedIncoming(s0s1s2);
+    stub->FeedIncoming(SessMakeConnectResultError());    // _result with level==error
     StreamParams p; p.host="h"; p.app="app"; p.streamKey="k"; p.tcUrl="rtmp://h/app";
     auto held = std::make_shared<std::unique_ptr<StubTransport>>(std::move(owned));
     StreamSession s(p, [held]() mutable -> std::unique_ptr<Transport> { return std::move(*held); });
