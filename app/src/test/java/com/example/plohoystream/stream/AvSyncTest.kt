@@ -25,12 +25,13 @@ class AvSyncTest {
 
     /**
      * Simulate sensor on CLOCK_BOOTTIME (SENSOR_INFO_TIMESTAMP_SOURCE == REALTIME).
-     * bootT0 and the first PTS are close; nanoT0 is far (10 min sleep).
+     * Realistic clocks: both positive, boottime = monotonic + accumulated sleep, so
+     * bootT0 > nanoT0 and the first PTS is close to bootT0.
      */
     @Test fun sensorIsBoottime_picksBootT0() {
-        val bootT0 = 5_000_000_000L
-        val nanoT0 = bootT0 - 600_000_000_000L          // mono clock is 600 s behind
-        val firstPtsNanos = bootT0 + 33_333_333L
+        val nanoT0 = 100_000_000_000L                   // 100 s monotonic uptime
+        val bootT0 = nanoT0 + 600_000_000_000L          // boottime includes 600 s of sleep
+        val firstPtsNanos = bootT0 + 33_333_333L        // sensor on BOOTTIME, near bootT0
         val result = chooseVideoEpoch(firstPtsNanos, nanoT0, bootT0)
         assertEquals(bootT0, result)
     }
@@ -47,7 +48,9 @@ class AvSyncTest {
         val firstPtsNanos = t0 + 33_333_333L
         val epoch = chooseVideoEpoch(firstPtsNanos, nanoT0, bootT0)
         val ptsMs = (firstPtsNanos - epoch) / 1_000_000L
-        assertTrue("ptsMs should be ~33 ms, got $ptsMs", abs(ptsMs - 33L) < 1000L)
+        // Inputs are exact (no sub-ms remainder), so the result is deterministic; a tight
+        // tolerance guards against a factor-of-1000 unit error a loose band would mask.
+        assertTrue("ptsMs should be 33 ms, got $ptsMs", abs(ptsMs - 33L) <= 1L)
     }
 
     // ── Audio rebase math ────────────────────────────────────────────────────
