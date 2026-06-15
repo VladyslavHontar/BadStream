@@ -87,7 +87,13 @@ fun SubScreen(title: String, onBack: () -> Unit, content: @Composable () -> Unit
 }
 
 @Composable
-fun SettingsPanel(viewModel: StreamViewModel, modifier: Modifier = Modifier) {
+fun SettingsPanel(
+    viewModel: StreamViewModel,
+    qualityOptions: List<com.example.plohoystream.camera.QualityOption> = emptyList(),
+    codecOptions: List<com.example.plohoystream.camera.VideoCodecOption> = emptyList(),
+    modifier: Modifier = Modifier,
+) {
+    // TODO(Task 9): consume qualityOptions + codecOptions in VideoSettings.
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     Column(modifier = modifier.fillMaxSize().glassSurface().padding(16.dp)) {
         AnimatedContent(targetState = ui.settingsRoute, label = "settings-nav") { route ->

@@ -98,10 +98,11 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             minZoom = config.minZoom
             maxZoom = config.maxZoom
             currentZoom = CameraControls.clampZoom(currentZoom, minZoom, maxZoom)
-            // The first target is the preview surface (preview-first ordering from CameraTargets);
-            // any other target is the encoder. We render preview via the SurfaceProvider, so adopt
-            // the first target as the preview surface and feed the rest to the processor's encoder.
-            if (targets.isNotEmpty() && previewSurface == null) previewSurface = targets.first()
+            // [previewSurface] (set only via setPreviewSurface) is the sole source of truth for the
+            // on-screen preview, rendered via the SurfaceProvider. The encoder is any target that is
+            // NOT the preview surface. This is correct for the backgrounded/encoder-only case where
+            // previewSurface == null and targets == [encoder]: the encoder is not misclassified as
+            // the preview.
             val encoder = targets.firstOrNull { it !== previewSurface }
             processor.setEncoderSurface(encoder)
             bindIfReady()
