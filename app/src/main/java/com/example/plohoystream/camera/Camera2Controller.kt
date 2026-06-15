@@ -66,9 +66,12 @@ class Camera2Controller(context: Context) : CameraController {
         handler.post {
             wantCameraId = config.cameraId
             // Skip a redundant start for the same camera + identical surfaces already
-            // active/in-flight (the preview can re-issue an unchanged start at launch).
-            if (config.cameraId == openedCameraId && targets == this.targets && (device != null || opening)) {
-                Log.i(TAG, "start ignored: camera ${config.cameraId} already active with same targets")
+            // active/in-flight (the preview can re-issue an unchanged start at launch). A change
+            // to the fps range or HDR mode MUST NOT be coalesced — it has to reconfigure so the
+            // new capture frame rate / dynamic range actually applies (e.g. picking 60fps).
+            if (config.cameraId == openedCameraId && targets == this.targets &&
+                config.fpsRange == fpsRange && hdr == this.hdr && (device != null || opening)) {
+                Log.i(TAG, "start ignored: camera ${config.cameraId} already active, unchanged")
                 return@post
             }
             this.targets = targets
@@ -195,6 +198,7 @@ class Camera2Controller(context: Context) : CameraController {
                 set(CaptureRequest.CONTROL_ZOOM_RATIO, currentZoom)
                 // Drive the requested capture cadence (e.g. 60fps). Some devices are picky
                 // about specific ranges/sizes, so apply defensively and fall back to default.
+                Log.i(TAG, "applying AE_TARGET_FPS_RANGE=$fpsRange on size (${targets.size} targets)")
                 fpsRange?.let { range ->
                     runCatching {
                         set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range)
