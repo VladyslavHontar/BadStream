@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.plohoystream.camera.QualityOption
+import com.example.plohoystream.camera.VideoCodecOption
 import com.example.plohoystream.stream.CodecOverride
 import com.example.plohoystream.stream.StreamViewModel
 import com.example.plohoystream.stream.VideoQuality
@@ -24,29 +26,61 @@ import com.example.plohoystream.ui.theme.OnSurfaceMuted
 import com.example.plohoystream.ui.theme.OnSurfaceWhite
 import com.example.plohoystream.ui.theme.PlohoyTheme
 
+private fun bitrateFor(opt: QualityOption): Int = when {
+    opt.height >= 2160 -> 20_000_000
+    opt.height >= 1080 && opt.fps >= 60 -> 9_000_000
+    opt.height >= 1080 -> 6_000_000
+    else -> 3_500_000
+}
+
 @Composable
-fun VideoSettings(viewModel: StreamViewModel) {
+fun VideoSettings(
+    viewModel: StreamViewModel,
+    qualityOptions: List<QualityOption> = emptyList(),
+    codecOptions: List<VideoCodecOption> = emptyList(),
+) {
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Fall back to safe defaults if the probe hasn't completed or failed.
+    val options = qualityOptions.ifEmpty {
+        listOf(
+            QualityOption(1280, 720, 30, hdrCapable = false),
+            QualityOption(1920, 1080, 30, hdrCapable = false),
+        )
+    }
+
+    // Fall back to Auto + AVC if empty.
+    val codecs = codecOptions.ifEmpty { listOf(VideoCodecOption.Auto, VideoCodecOption.Avc) }
+
     SubScreen(title = "Video", onBack = { viewModel.navigateSettings(SettingsRoute.Root) }) {
         DimmedWhileLiveBanner(visible = ui.isActive)
         Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             Text("Resolution & frame rate", color = OnSurfaceWhite, style = MaterialTheme.typography.titleMedium)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                VideoQuality.Presets.forEach { q ->
+                options.forEach { opt ->
                     FilterChip(
-                        selected = ui.settings.quality.height == q.height && ui.settings.quality.fps == q.fps,
-                        onClick = { if (!ui.isActive) viewModel.setQuality(q) },
+                        selected = ui.settings.quality.height == opt.height && ui.settings.quality.fps == opt.fps,
+                        onClick = {
+                            if (!ui.isActive) viewModel.setQuality(
+                                VideoQuality(opt.width, opt.height, opt.fps, bitrateFor(opt), 128_000)
+                            )
+                        },
                         enabled = !ui.isActive,
-                        label = { Text("${q.height}p ${q.fps}") },
+                        label = { Text("${opt.height}p ${opt.fps}") },
                     )
                 }
             }
             Text("Codec", color = OnSurfaceWhite, style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(CodecOverride.Auto to "Auto", CodecOverride.ForceHevc to "HEVC", CodecOverride.ForceAvc to "AVC").forEach { (c, label) ->
+                codecs.forEach { videoCodecOption ->
+                    val (codecOverride, label) = when (videoCodecOption) {
+                        VideoCodecOption.Auto -> CodecOverride.Auto to "Auto"
+                        VideoCodecOption.Hevc -> CodecOverride.ForceHevc to "HEVC"
+                        VideoCodecOption.Avc -> CodecOverride.ForceAvc to "AVC"
+                    }
                     FilterChip(
-                        selected = ui.settings.codecOverride == c,
-                        onClick = { if (!ui.isActive) viewModel.setCodecOverride(c) },
+                        selected = ui.settings.codecOverride == codecOverride,
+                        onClick = { if (!ui.isActive) viewModel.setCodecOverride(codecOverride) },
                         enabled = !ui.isActive,
                         label = { Text(label) },
                     )
@@ -57,6 +91,29 @@ fun VideoSettings(viewModel: StreamViewModel) {
                 "Auto lets the server negotiate the best codec. HEVC is more efficient but some servers reject it; AVC is the most compatible.",
                 color = OnSurfaceMuted, style = MaterialTheme.typography.labelMedium,
             )
+
+            // HDR toggle with per-option availability reason.
+            val selectedOpt = options.firstOrNull {
+                it.height == ui.settings.quality.height && it.fps == ui.settings.quality.fps
+            }
+            val hdrState = selectedOpt?.let { com.example.plohoystream.camera.CaptureMenu.hdrToggleState(it) }
+                ?: com.example.plohoystream.camera.HdrToggleState(false, "Select a resolution first")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("HDR (HLG10)", color = OnSurfaceWhite, style = MaterialTheme.typography.titleMedium)
+                Switch(
+                    checked = ui.settings.hdrEnabled && hdrState.enabled,
+                    onCheckedChange = { if (hdrState.enabled && !ui.isActive) viewModel.setHdr(it) },
+                    enabled = hdrState.enabled && !ui.isActive,
+                )
+            }
+            if (!hdrState.enabled) Text(
+                hdrState.reason ?: "", color = OnSurfaceMuted, style = MaterialTheme.typography.labelMedium,
+            )
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

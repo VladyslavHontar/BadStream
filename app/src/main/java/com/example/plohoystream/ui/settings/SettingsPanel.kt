@@ -93,7 +93,6 @@ fun SettingsPanel(
     codecOptions: List<com.example.plohoystream.camera.VideoCodecOption> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
-    // TODO(Task 9): consume qualityOptions + codecOptions in VideoSettings.
     val ui by viewModel.uiState.collectAsStateWithLifecycle()
     Column(modifier = modifier.fillMaxSize().glassSurface().padding(16.dp)) {
         AnimatedContent(targetState = ui.settingsRoute, label = "settings-nav") { route ->
@@ -119,7 +118,7 @@ fun SettingsPanel(
                     }
                 }
                 SettingsRoute.Destination -> DestinationSettings(viewModel)
-                SettingsRoute.Video -> VideoSettings(viewModel)
+                SettingsRoute.Video -> VideoSettings(viewModel, qualityOptions, codecOptions)
                 SettingsRoute.Audio -> AudioSettings(viewModel)
                 SettingsRoute.Camera -> CameraSettings(viewModel)
                 SettingsRoute.About -> AboutSettings(viewModel)
