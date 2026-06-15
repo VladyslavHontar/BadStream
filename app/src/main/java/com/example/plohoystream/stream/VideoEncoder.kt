@@ -89,6 +89,19 @@ class VideoEncoder(
 
     fun start() = codec.start()
 
+    /**
+     * Apply a new target bitrate (bps) to the running encoder at runtime (ABR). Best-effort:
+     * MediaCodec may ignore it; failures are swallowed so a codec quirk never kills the stream.
+     */
+    fun setTargetBitrate(bps: Int) {
+        if (released || bps <= 0) return
+        runCatching {
+            codec.setParameters(android.os.Bundle().apply {
+                putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps)
+            })
+        }
+    }
+
     fun stop() {
         released = true
         runCatching { codec.setCallback(null) }

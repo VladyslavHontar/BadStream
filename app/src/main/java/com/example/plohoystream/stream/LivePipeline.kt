@@ -50,7 +50,10 @@ object LivePipeline {
                 var recorder: NativeRecorder? = null
                 lateinit var eng: CameraStreamEngine
                 eng = CameraStreamEngine(
-                    streamerFactory = { NativeRtmpStreamer() },
+                    streamerFactory = { scheme ->
+                        if (scheme == EndpointScheme.SRT) NativeSrtStreamer() else NativeRtmpStreamer()
+                    },
+                    applyBitrate = { bps -> video?.setTargetBitrate(bps) },
                     hevcEncoder = hevcCaps.encoder,
                     hevcMain10 = hevcCaps.main10,
                     cameraHdr = anyCameraHdr,

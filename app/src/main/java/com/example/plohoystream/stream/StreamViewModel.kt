@@ -92,6 +92,13 @@ class StreamViewModel(
     fun setObsBrbScene(value: String) = mutate { it.copy(obsBrbSceneName = value) }
     fun setObsAutoSwitch(on: Boolean) = mutate { it.copy(obsAutoSwitchEnabled = on) }
 
+    fun setSrtLatency(value: Int) = mutate { it.copy(srtLatencyMs = value) }
+    fun setSrtStreamId(value: String) = mutate { it.copy(srtStreamId = value) }
+    fun setAbrEnabled(on: Boolean) = mutate { it.copy(abrEnabled = on) }
+    fun setAbrMinKbps(value: Int) = mutate { it.copy(abrMinKbps = value) }
+    fun setAbrTargetKbps(value: Int) = mutate { it.copy(abrTargetKbps = value) }
+    fun setAbrMaxKbps(value: Int) = mutate { it.copy(abrMaxKbps = value) }
+
     fun obsSwitchScene(name: String) = obs?.switchScene(name)
     fun obsStartStream() = obs?.startObsStream()
     fun obsStopStream() = obs?.stopObsStream()
@@ -113,6 +120,12 @@ class StreamViewModel(
                 quality = cfg.quality,
                 codecOverride = cfg.codecOverride,
                 recordWhileStreaming = cfg.recordWhileStreaming,
+                srtLatencyMs = cfg.srtLatencyMs,
+                srtStreamId = cfg.srtStreamId,
+                abrEnabled = cfg.abrEnabled,
+                abrMinKbps = cfg.abrMinKbps,
+                abrTargetKbps = cfg.abrTargetKbps,
+                abrMaxKbps = cfg.abrMaxKbps,
             ),
         )
     }

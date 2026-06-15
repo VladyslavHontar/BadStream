@@ -29,7 +29,9 @@ add_executable(core_tests
         test_codec_negotiation.cpp
         test_rtmp_control.cpp
         test_mp4_box.cpp
-        test_mp4_writer.cpp)
+        test_mp4_writer.cpp
+        test_ts_muxer.cpp
+        test_abr.cpp)
 target_link_libraries(core_tests PRIVATE plohoystream_core GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(core_tests)

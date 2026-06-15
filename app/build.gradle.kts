@@ -39,6 +39,14 @@ android {
             version = "3.22.1"
         }
     }
+    // Package the prebuilt libsrt.so (per-ABI) into the APK. CMake's imported SHARED target
+    // is used for linking only; AGP does not auto-package imported libs, so the prebuilt dir
+    // is added as a jniLibs source set (its <abi>/libsrt.so layout matches jniLibs).
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/cpp/third_party/srt/libs")
+        }
+    }
     buildFeatures {
         compose = true
     }

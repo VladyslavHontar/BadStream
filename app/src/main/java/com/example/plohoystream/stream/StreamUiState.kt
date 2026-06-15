@@ -22,8 +22,13 @@ data class StreamUiState(
     val obsStreaming: Boolean = false,
 ) {
     val canGoLive: Boolean
-        get() = settings.rtmpUrl.isNotBlank() && settings.streamKey.isNotBlank() &&
-            (stream is StreamState.Idle || stream is StreamState.Error)
+        get() {
+            val idle = stream is StreamState.Idle || stream is StreamState.Error
+            // SRT carries identity in the URL (streamid); only RTMP requires a separate stream key.
+            val isSrt = settings.rtmpUrl.startsWith("srt://")
+            val haveTarget = settings.rtmpUrl.isNotBlank() && (isSrt || settings.streamKey.isNotBlank())
+            return idle && haveTarget
+        }
 
     val isActive: Boolean
         get() = stream is StreamState.Connecting ||

@@ -22,4 +22,11 @@ data class Settings(
     val obsMainSceneName: String = "",
     val obsBrbSceneName: String = "",
     val obsAutoSwitchEnabled: Boolean = false,
+    // --- SRT egress (used when the destination URL is srt://). ---
+    val srtLatencyMs: Int = 2000,
+    val srtStreamId: String = "",
+    val abrEnabled: Boolean = true,
+    val abrMinKbps: Int = 1000,
+    val abrTargetKbps: Int = 6000,
+    val abrMaxKbps: Int = 12000,
 )

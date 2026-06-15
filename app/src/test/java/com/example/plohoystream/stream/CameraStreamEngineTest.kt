@@ -19,10 +19,12 @@ class CameraStreamEngineTest {
         hevcMain10: Boolean = false,
         cameraHdr: Boolean = false,
         startMedia: (RtmpStreamer, VideoFormat, VideoQuality, Boolean) -> Unit = { _, _, _, _ -> },
+        applyBitrate: (Int) -> Unit = {},
     ) = CameraStreamEngine(
         streamerFactory = { streamer },
         startMedia = startMedia,
         stopMedia = {},
+        applyBitrate = applyBitrate,
         pollIntervalMs = 100,
         hevcEncoder = hevcEncoder,
         hevcMain10 = hevcMain10,
@@ -178,6 +180,53 @@ class CameraStreamEngineTest {
         assertEquals(StreamState.Idle, e.state.value)
         advanceTimeBy(6000); runCurrent()
         assertEquals(StreamState.Idle, e.state.value)             // did not reconnect
+    }
+
+    @Test fun srtUrl_selectsSrtScheme_andPassesAbr() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer)
+        e.start(StreamConfig(
+            "srt://relay.example.com:8890?streamid=publish/live", "",
+            abrEnabled = true, abrMinKbps = 2000, abrMaxKbps = 9000,
+        ))
+        runCurrent()
+        assertEquals(EndpointScheme.SRT, streamer.startedScheme)
+        assertEquals(true, streamer.lastAbr?.enabled)
+        assertEquals(2_000_000, streamer.lastAbr?.minBps)
+        assertEquals(9_000_000, streamer.lastAbr?.maxBps)
+        e.stop()
+    }
+
+    @Test fun rtmpUrl_selectsRtmpScheme_abrDisabled() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val e = engine(streamer)
+        e.start(StreamConfig("rtmp://h/app", "key", abrEnabled = true))
+        runCurrent()
+        assertEquals(EndpointScheme.RTMP, streamer.startedScheme)
+        assertEquals(false, streamer.lastAbr?.enabled)  // ABR is SRT-only
+        e.stop()
+    }
+
+    @Test fun srtLive_appliesClampedAbrTargetToEncoder() = runTest {
+        val streamer = FakeRtmpStreamer()
+        val applied = mutableListOf<Int>()
+        val e = engine(streamer, applyBitrate = { applied.add(it) })
+        e.start(StreamConfig(
+            "srt://h:9000", "", abrEnabled = true, abrMinKbps = 1000, abrMaxKbps = 8000,
+        ))
+        runCurrent()
+        streamer.emitState(2)
+        streamer.targetBitrateValue = 20_000_000   // above max -> clamps to 8 Mbps
+        advanceTimeBy(150); runCurrent()
+        assertEquals(8_000_000, applied.last())
+        e.stop()
+    }
+
+    @Test fun clampBitrate_coercesToBounds() {
+        val abr = AbrParams(minBps = 1_000_000, maxBps = 8_000_000)
+        assertEquals(1_000_000, CameraStreamEngine.clampBitrate(500_000, abr))
+        assertEquals(8_000_000, CameraStreamEngine.clampBitrate(20_000_000, abr))
+        assertEquals(5_000_000, CameraStreamEngine.clampBitrate(5_000_000, abr))
     }
 
     @Test fun rejected_isTerminal_noReconnect() = runTest {
