@@ -3,6 +3,7 @@
 #include <vector>
 #include "stream_session.h"
 #include "tcp_transport.h"
+#include "mp4_writer.h"
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_plohoystream_MainActivity_stringFromJNI(
@@ -30,6 +31,7 @@ std::string ToStr(JNIEnv* env, jstring s) {
     return out;
 }
 StreamSession* Self(jlong h) { return reinterpret_cast<StreamSession*>(h); }
+FragmentedMp4Writer* Rec(jlong h) { return reinterpret_cast<FragmentedMp4Writer*>(h); }
 }
 
 extern "C" {
@@ -107,6 +109,56 @@ Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeStop(JNIEnv*, jobj
 JNIEXPORT void JNICALL
 Java_com_example_plohoystream_stream_NativeRtmpStreamer_nativeDestroy(JNIEnv*, jobject, jlong h) {
     delete Self(h);
+}
+
+// --- NativeRecorder (local fragmented-MP4 recording) ---
+
+JNIEXPORT jlong JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeCreate(JNIEnv*, jobject) {
+    return reinterpret_cast<jlong>(new FragmentedMp4Writer());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeStart(
+        JNIEnv* env, jobject, jlong h, jstring path, jint codec, jint width, jint height,
+        jint fps, jint sampleRate, jint channels) {
+    if (!h) return JNI_FALSE;
+    bool ok = Rec(h)->Start(ToStr(env, path), codec, width, height, fps, sampleRate, channels);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeWriteVideoConfig(
+        JNIEnv* env, jobject, jlong h, jbyteArray csd) {
+    if (h) Rec(h)->WriteVideoConfig(ToBytes(env, csd));
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeWriteVideo(
+        JNIEnv* env, jobject, jlong h, jbyteArray annexb, jboolean key, jlong pts) {
+    if (h) Rec(h)->WriteVideo(ToBytes(env, annexb), key, static_cast<uint32_t>(pts));
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeWriteAudioConfig(
+        JNIEnv*, jobject, jlong h, jint sampleRate, jint channels) {
+    if (h) Rec(h)->WriteAudioConfig(sampleRate, channels);
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeWriteAudio(
+        JNIEnv* env, jobject, jlong h, jbyteArray aac, jlong pts) {
+    if (h) Rec(h)->WriteAudio(ToBytes(env, aac), static_cast<uint32_t>(pts));
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeStop(JNIEnv*, jobject, jlong h) {
+    if (h) Rec(h)->Stop();
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeRecorder_nativeDestroy(JNIEnv*, jobject, jlong h) {
+    delete Rec(h);
 }
 
 } // extern "C"

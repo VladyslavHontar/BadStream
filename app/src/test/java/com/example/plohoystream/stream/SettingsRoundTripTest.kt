@@ -14,6 +14,7 @@ class SettingsRoundTripTest {
             quality = VideoQuality(1280, 720, 30, 3_500_000, 128_000),
             codecOverride = CodecOverride.ForceHevc,
             hdrEnabled = true,
+            recordWhileStreaming = true,
         )
         val encoded = json.encodeToString(Settings.serializer(), original)
         val decoded = json.decodeFromString(Settings.serializer(), encoded)
@@ -29,6 +30,7 @@ class SettingsRoundTripTest {
         assertEquals(VideoQuality.Default, decoded.quality)
         assertEquals(CodecOverride.Auto, decoded.codecOverride)
         assertEquals(false, decoded.hdrEnabled)
+        assertEquals(false, decoded.recordWhileStreaming)
     }
 
     @Test fun unknownField_isIgnored_forwardCompat() {

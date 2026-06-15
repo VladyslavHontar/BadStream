@@ -74,6 +74,7 @@ class StreamViewModel(
     fun setHdr(on: Boolean) = mutate { it.copy(hdrEnabled = on) }
     fun setQuality(q: VideoQuality) = mutate { it.copy(quality = q) }
     fun setCodecOverride(c: CodecOverride) = mutate { it.copy(codecOverride = c) }
+    fun setRecordWhileStreaming(on: Boolean) = mutate { it.copy(recordWhileStreaming = on) }
 
     fun openSettings() = _uiState.update { it.copy(panelOpen = true, settingsRoute = SettingsRoute.Root) }
     fun closeSettings() = _uiState.update { it.copy(panelOpen = false, settingsRoute = SettingsRoute.Root) }
@@ -91,6 +92,7 @@ class StreamViewModel(
                 hdrEnabled = cfg.hdrEnabled,
                 quality = cfg.quality,
                 codecOverride = cfg.codecOverride,
+                recordWhileStreaming = cfg.recordWhileStreaming,
             ),
         )
     }

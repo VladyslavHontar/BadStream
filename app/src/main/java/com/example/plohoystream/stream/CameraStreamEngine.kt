@@ -22,7 +22,8 @@ import kotlinx.coroutines.launch
  */
 class CameraStreamEngine(
     private val streamerFactory: () -> RtmpStreamer,
-    private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality) -> Unit,
+    // record (4th arg) = whether this go-live should also record locally (Settings.recordWhileStreaming).
+    private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality, Boolean) -> Unit,
     private val stopMedia: () -> Unit,
     private val pollIntervalMs: Long = 250,
     private val reconnectDelayMs: Long = 5000,
@@ -89,7 +90,7 @@ class CameraStreamEngine(
                 val s = streamerFactory().also { streamer = it }
                 s.start(endpoint, requested.codec, width, height, fps, sampleRate)
 
-                val outcome = runSession(s, requested, quality)
+                val outcome = runSession(s, requested, quality, config.recordWhileStreaming)
 
                 // Per-attempt teardown (mirror of stop()'s media/flow cleanup, minus job cancel).
                 if (mediaStarted) stopMedia()
@@ -114,7 +115,7 @@ class CameraStreamEngine(
     }
 
     /** Polls native state for one connect attempt; returns why it ended. */
-    private suspend fun runSession(s: RtmpStreamer, requested: VideoFormat, quality: VideoQuality): Outcome {
+    private suspend fun runSession(s: RtmpStreamer, requested: VideoFormat, quality: VideoQuality, record: Boolean): Outcome {
         while (userWantsLive) {
             when (s.state()) {
                 2 -> {
@@ -123,7 +124,7 @@ class CameraStreamEngine(
                         val negotiated = s.negotiatedCodec()
                         val actual = if (negotiated == VideoCodecType.HEVC) requested
                                      else VideoFormat(VideoCodecType.AVC, main10 = false, DynamicRange.SDR)
-                        startMedia(s, actual, quality)
+                        startMedia(s, actual, quality, record)
                         _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
                     }
                     _state.value = StreamState.Live

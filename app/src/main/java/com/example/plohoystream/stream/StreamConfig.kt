@@ -7,4 +7,5 @@ data class StreamConfig(
     val hdrEnabled: Boolean = false,
     val quality: VideoQuality = VideoQuality.Default,
     val codecOverride: CodecOverride = CodecOverride.Auto,
+    val recordWhileStreaming: Boolean = false,
 )

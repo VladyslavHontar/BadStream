@@ -8,6 +8,7 @@ add_library(plohoystream_core STATIC
         video_codec.cpp
         rtmp_client.cpp
         tcp_transport.cpp
-        stream_session.cpp)
+        stream_session.cpp
+        mp4_writer.cpp)
 target_include_directories(plohoystream_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(plohoystream_core PUBLIC cxx_std_17)

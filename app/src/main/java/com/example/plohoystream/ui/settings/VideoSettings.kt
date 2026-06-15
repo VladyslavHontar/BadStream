@@ -8,9 +8,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -53,6 +55,22 @@ fun VideoSettings(viewModel: StreamViewModel) {
             Text("Video bitrate: ${ui.settings.quality.videoBitrate / 1000} kbps", color = OnSurfaceWhite, style = MaterialTheme.typography.bodyMedium)
             Text(
                 "Auto lets the server negotiate the best codec. HEVC is more efficient but some servers reject it; AVC is the most compatible.",
+                color = OnSurfaceMuted, style = MaterialTheme.typography.labelMedium,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Record while streaming", color = OnSurfaceWhite, style = MaterialTheme.typography.titleMedium)
+                Switch(
+                    checked = ui.settings.recordWhileStreaming,
+                    onCheckedChange = viewModel::setRecordWhileStreaming,
+                    enabled = !ui.isActive,
+                )
+            }
+            Text(
+                "Saves a copy of the live stream to a local .mp4 while you broadcast (same codec, no extra encoding).",
                 color = OnSurfaceMuted, style = MaterialTheme.typography.labelMedium,
             )
         }
