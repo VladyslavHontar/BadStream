@@ -12,6 +12,8 @@ object CameraCapabilities {
         targetFps: Int = 30,
     ): CameraConfig? {
         if (cameras.isEmpty()) return null
+        android.util.Log.i("CameraCaps", "fps ranges per camera: " +
+            cameras.joinToString { "${it.id}(${it.facing})=${it.fpsRanges}" })
         val pool = cameras.filter { it.facing == facing }.ifEmpty { cameras }
         val cam = pool.firstOrNull { it.isLogical } ?: pool.first()
         return CameraConfig(
@@ -46,7 +48,10 @@ object CameraCapabilities {
         if (ranges.isEmpty()) return null
         ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
         ranges.filter { it.upper == targetFps }.maxByOrNull { it.lower }?.let { return it }
-        return ranges.filter { it.upper <= targetFps }.maxByOrNull { it.upper }
+        // Highest upper, then highest lower — prefer a locked range (e.g. [30,30]) over a
+        // variable one (e.g. [5,30]) that can dip low in dim light and look choppy.
+        return ranges.filter { it.upper <= targetFps }
+            .maxWithOrNull(compareBy({ it.upper }, { it.lower }))
     }
 
     private fun buildLenses(cam: CameraInfo): List<CameraLens> {
