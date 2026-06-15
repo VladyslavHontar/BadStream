@@ -25,32 +25,11 @@ object CameraCapabilities {
             supportsHdr = cam.supportsHdr,
             sensorOrientation = cam.sensorOrientation,
             targetFps = targetFps,
-            fpsRange = chooseFpsRange(cam.fpsRanges, targetFps),
         )
     }
 
     private fun chooseSize(sizes: List<Resolution>): Resolution =
         sizes.minByOrNull { abs(it.pixels - TARGET.pixels) } ?: TARGET
-
-    /**
-     * Pick the AE target fps range that best matches [targetFps]:
-     *  1. an exact `[fps, fps]` range (fixed cadence — best for streaming),
-     *  2. else the range whose `upper == fps` with the highest `lower`,
-     *  3. else the range with the highest `upper <= fps`,
-     *  4. else null (leave the camera default — keeps ~30fps working as before).
-     */
-    internal fun chooseFpsRange(
-        ranges: List<android.util.Range<Int>>,
-        targetFps: Int,
-    ): android.util.Range<Int>? {
-        if (ranges.isEmpty()) return null
-        ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
-        ranges.filter { it.upper == targetFps }.maxByOrNull { it.lower }?.let { return it }
-        // Highest upper, then highest lower — prefer a locked range (e.g. [30,30]) over a
-        // variable one (e.g. [5,30]) that can dip low in dim light and look choppy.
-        return ranges.filter { it.upper <= targetFps }
-            .maxWithOrNull(compareBy({ it.upper }, { it.lower }))
-    }
 
     private fun buildLenses(cam: CameraInfo): List<CameraLens> {
         val ratios = (cam.lensRatios + 1.0f)

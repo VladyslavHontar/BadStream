@@ -23,9 +23,9 @@ import androidx.lifecycle.LifecycleRegistry
 import java.util.concurrent.Executor
 
 /**
- * CameraX implementation of [CameraController], replacing [Camera2Controller].
+ * CameraX implementation of [CameraController] (the sole capture backend).
  *
- * Unlike Camera2Controller we don't drive the device lifecycle by hand: a [ProcessCameraProvider]
+ * We don't drive the device lifecycle by hand: a [ProcessCameraProvider]
  * binds a [Preview] use case to a lifecycle WE own ([lifecycle], a [LifecycleRegistry]) so that
  * binding survives the Activity (the foreground service keeps the process alive while streaming).
  * The on-screen preview and the MediaCodec encoder input are both fed by a single

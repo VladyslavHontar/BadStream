@@ -2,10 +2,7 @@ package com.example.plohoystream.camera
 
 import android.content.Context
 
-/** Chooses the capture backend. CameraX is default; Camera2 retained for fallback during bring-up. */
+/** Constructs the capture backend. CameraX is the sole backend (Camera2 retired post-parity). */
 object CameraControllerFactory {
-    @Volatile var useCameraX: Boolean = true
-
-    fun create(context: Context): CameraController =
-        if (useCameraX) CameraXController(context) else Camera2Controller(context)
+    fun create(context: Context): CameraController = CameraXController(context)
 }
