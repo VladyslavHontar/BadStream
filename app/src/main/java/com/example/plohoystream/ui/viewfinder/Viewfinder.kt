@@ -28,11 +28,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.plohoystream.camera.Camera2Controller
 import com.example.plohoystream.camera.CameraCapabilities
 import com.example.plohoystream.camera.CameraControls
 import com.example.plohoystream.camera.CameraEnumerator
+import com.example.plohoystream.camera.CameraTargets
 import com.example.plohoystream.camera.Facing
+import com.example.plohoystream.stream.LivePipeline
 import com.example.plohoystream.stream.StreamState
 import com.example.plohoystream.stream.StreamViewModel
 import com.example.plohoystream.ui.CameraPreview
@@ -48,20 +49,34 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val activeHdr by viewModel.activeHdr.collectAsStateWithLifecycle()
 
     val cameras = remember { CameraEnumerator.enumerate(context) }
-    val controller = remember { Camera2Controller(context) }
+    val controller = LivePipeline.camera
 
     var facing by remember { mutableStateOf(Facing.BACK) }
     var surface by remember { mutableStateOf<Surface?>(null) }
     var zoom by remember { mutableStateOf(1f) }
 
     val config = remember(cameras, facing) { CameraCapabilities.select(cameras, facing) }
-    DisposableEffect(Unit) { onDispose { controller.stop() } }
 
     LaunchedEffect(config, surface, encoderSurface, activeHdr) {
-        val c = config; val preview = surface
-        if (c != null && preview != null) {
-            controller.start(c, listOfNotNull(preview, encoderSurface), hdr = activeHdr)
+        val c = config ?: return@LaunchedEffect
+        val targets = CameraTargets.select(surface, encoderSurface)
+        if (targets.isEmpty()) {
+            controller.stop()           // idle + no preview (e.g. backgrounded while not live)
+        } else {
+            controller.start(c, targets, hdr = activeHdr)
             controller.setZoom(zoom)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            // Detach preview only. If streaming, the camera must keep feeding the encoder, so
+            // reconfigure to whatever targets remain (encoder-only) rather than stopping. If
+            // idle (no encoder surface), stop the camera.
+            val enc = encoderSurface
+            val targets = CameraTargets.select<Surface>(null, enc)
+            if (targets.isEmpty()) controller.stop()
+            else config?.let { controller.start(it, targets, hdr = activeHdr) }
         }
     }
 
