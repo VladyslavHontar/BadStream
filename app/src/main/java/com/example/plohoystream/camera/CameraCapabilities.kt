@@ -12,8 +12,6 @@ object CameraCapabilities {
         targetFps: Int = 30,
     ): CameraConfig? {
         if (cameras.isEmpty()) return null
-        android.util.Log.i("CameraCaps", "fps ranges per camera: " +
-            cameras.joinToString { "${it.id}(${it.facing})=${it.fpsRanges}" })
         val pool = cameras.filter { it.facing == facing }.ifEmpty { cameras }
         val cam = pool.firstOrNull { it.isLogical } ?: pool.first()
         return CameraConfig(
