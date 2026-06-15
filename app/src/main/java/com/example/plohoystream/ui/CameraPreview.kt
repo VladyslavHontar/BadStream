@@ -1,7 +1,6 @@
 package com.example.plohoystream.ui
 
 import android.graphics.Matrix
-import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
@@ -15,8 +14,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import android.content.Context
-import android.os.Build
-import android.view.WindowManager
 
 /**
  * A [TextureView]-backed camera preview that **letterboxes** (fits) the camera's aspect ratio
@@ -103,27 +100,20 @@ fun CameraPreview(
     }
 }
 
-/** Raw display rotation constant (`Surface.ROTATION_0/90/180/270`). */
-private fun displayRotation(context: Context): Int =
-    if (Build.VERSION.SDK_INT >= 30) {
-        context.display?.rotation ?: Surface.ROTATION_0
-    } else {
-        @Suppress("DEPRECATION")
-        (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
-            .defaultDisplay.rotation
-    }
-
 /**
- * Applies the canonical Camera2 `configureTransform` [Matrix] (per the AOSP Camera2Basic
- * sample) so the sensor buffer appears upright AND undistorted inside the [TextureView]'s
- * [viewW] x [viewH] box. This is a **display-only** transform (never touches the
- * [SurfaceTexture] buffer), so the shared MediaCodec encoder surface is unaffected.
+ * Display-only [TextureView] transform for the **CameraX** capture path.
  *
- * The buffer ([bufferW] x [bufferH], landscape sensor output) is mapped to the view via
- * [Matrix.setRectToRect] against a **swapped** buffer rect, then uniformly scaled to fill, then
- * rotated by `90 * (rotation - 2)` — the setRectToRect step is what compensates the width/height
- * swap so a 90/270 rotation does not stretch the image. On the Seeker (`ROTATION_90`) this
- * yields a 270° rotation, calibrated against the device. Front cameras add a horizontal mirror.
+ * With CameraX the frame is rendered into this view's [SurfaceTexture] already in display
+ * orientation — CameraX's `SurfaceOutput` transform folds in the sensor→display rotation before
+ * our GL [com.example.plohoystream.camera.EgressSurfaceProcessor] draws it. So unlike the old raw
+ * Camera2 path (which delivered a sensor-oriented landscape buffer and needed a compensating
+ * rotation here), the TextureView must NOT re-rotate — doing so double-transforms (the symptom was
+ * a 90° preview). We apply identity; the TextureView scales the already-upright buffer to fill the
+ * (aspect-matched) view.
+ *
+ * The one thing CameraX's raw `Preview.SurfaceProvider` path does not do is mirror the front
+ * camera, so we still apply a horizontal flip there for a natural selfie preview. This never
+ * touches the [SurfaceTexture] buffer, so the shared MediaCodec encoder surface is unaffected.
  */
 private fun applyPreviewTransform(
     context: Context,
@@ -134,30 +124,12 @@ private fun applyPreviewTransform(
     bufferH: Int,
     isFrontFacing: Boolean,
 ) {
-    if (viewW == 0 || viewH == 0 || bufferW == 0 || bufferH == 0) return
-
-    val rotation = displayRotation(context)
+    if (viewW == 0 || viewH == 0) return
     val matrix = Matrix()
-    val viewRect = RectF(0f, 0f, viewW.toFloat(), viewH.toFloat())
-    // Buffer rect with swapped dimensions — the camera output is landscape but the view is
-    // rotated, so we match the rotated footprint.
-    val bufferRect = RectF(0f, 0f, bufferH.toFloat(), bufferW.toFloat())
-    val centerX = viewRect.centerX()
-    val centerY = viewRect.centerY()
-
-    if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
-        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
-        matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
-        val scale = maxOf(viewH.toFloat() / bufferH, viewW.toFloat() / bufferW)
-        matrix.postScale(scale, scale, centerX, centerY)
-        matrix.postRotate((90 * (rotation - 2)).toFloat(), centerX, centerY)
-    } else if (rotation == Surface.ROTATION_180) {
-        matrix.postRotate(180f, centerX, centerY)
-    }
     if (isFrontFacing) {
-        // Mirror horizontally for a natural selfie preview.
-        matrix.postScale(-1f, 1f, centerX, centerY)
+        // Mirror horizontally for a natural selfie preview (CameraX's SurfaceProvider path
+        // does not auto-mirror).
+        matrix.postScale(-1f, 1f, viewW / 2f, viewH / 2f)
     }
-
     textureView.setTransform(matrix)
 }
