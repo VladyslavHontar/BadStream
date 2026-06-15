@@ -46,6 +46,13 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     private val textureTransform = FloatArray(16)
     private val surfaceOutputTransform = FloatArray(16)
 
+    // The MediaCodec encoder surface is registered manually (not a CameraX SurfaceOutput), so it
+    // has no CameraX-computed transform of its own. We reuse the preview SurfaceOutput's transform
+    // — both surfaces are the same size and want the same display orientation — and cache it so the
+    // encoder-only (backgrounded) case stays correctly oriented after the preview goes away.
+    private val encoderTransform = FloatArray(16)
+    private var hasEncoderTransform = false
+
     /** Encoder (MediaCodec input) surface, registered/unregistered via [setEncoderSurface]. */
     private var encoderSurface: Surface? = null
 
@@ -130,9 +137,12 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         surfaceTexture.getTransformMatrix(textureTransform)
         val timestampNs = surfaceTexture.timestamp
 
-        // Render to each CameraX preview output (transform adjusted by the SurfaceOutput).
+        // Render to each CameraX preview output (transform adjusted by the SurfaceOutput). Cache
+        // that orientation-corrected transform so the encoder matches the preview orientation.
         for ((output, surface) in outputSurfaces) {
             output.updateTransformMatrix(surfaceOutputTransform, textureTransform)
+            System.arraycopy(surfaceOutputTransform, 0, encoderTransform, 0, 16)
+            hasEncoderTransform = true
             try {
                 renderer.render(timestampNs, surfaceOutputTransform, surface)
             } catch (e: RuntimeException) {
@@ -140,11 +150,14 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             }
         }
 
-        // Render to the encoder input surface (raw camera transform; the encoder consumes the
-        // frame as-is). Done last so a swap failure here can't drop the preview.
+        // Render to the encoder input surface using the same display-oriented transform as the
+        // preview (cached above), so the streamed/recorded video isn't 90° off. Falls back to the
+        // raw transform only if no preview frame has been seen yet. Done last so a swap failure
+        // here can't drop the preview.
         encoderSurface?.let { surface ->
+            val transform = if (hasEncoderTransform) encoderTransform else textureTransform
             try {
-                renderer.render(timestampNs, textureTransform, surface)
+                renderer.render(timestampNs, transform, surface)
             } catch (e: RuntimeException) {
                 Log.e(TAG, "Failed to render encoder frame with OpenGL.", e)
             }
