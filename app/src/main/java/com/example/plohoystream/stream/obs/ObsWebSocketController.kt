@@ -51,6 +51,8 @@ class ObsWebSocketController(
     @Volatile private var socket: WebSocket? = null
     @Volatile private var latestSettings: Settings = Settings()
     @Volatile private var enabled = false
+    // Connection-relevant params only; a change here (not any Settings field) triggers reconnect.
+    @Volatile private var connParams: Triple<String, Int, String> = Triple("", 4455, "")
 
     private val requestCounter = AtomicInteger(0)
     private fun nextRequestId() = "r${requestCounter.incrementAndGet()}"
@@ -64,14 +66,21 @@ class ObsWebSocketController(
             settings.collect { cfg ->
                 latestSettings = cfg
                 val shouldBeEnabled = cfg.obsHost.isNotBlank()
-                if (shouldBeEnabled != enabled) {
-                    enabled = shouldBeEnabled
-                    if (enabled) connectToObs(cfg) else disconnectFromObs()
-                } else if (enabled) {
-                    // Host/port/password changed — reconnect
-                    disconnectFromObs()
-                    delay(200)
-                    connectToObs(cfg)
+                val newParams = Triple(cfg.obsHost, cfg.obsPort, cfg.obsPassword)
+                when {
+                    shouldBeEnabled != enabled -> {
+                        enabled = shouldBeEnabled
+                        connParams = newParams
+                        if (enabled) connectToObs(cfg) else disconnectFromObs()
+                    }
+                    // Reconnect ONLY when connection params change — not on unrelated settings
+                    // (scene names, auto-switch, quality, …); those are read live via latestSettings.
+                    enabled && newParams != connParams -> {
+                        connParams = newParams
+                        disconnectFromObs()
+                        delay(200)
+                        connectToObs(cfg)
+                    }
                 }
             }
         }
@@ -193,11 +202,13 @@ class ObsWebSocketController(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (webSocket !== socket) return   // stale socket from a deliberate reconnect — ignore
             _connected.value = false
             scheduleReconnect()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (webSocket !== socket) return   // stale socket (we already opened a new one) — ignore
             _connected.value = false
             if (enabled) scheduleReconnect()
         }
