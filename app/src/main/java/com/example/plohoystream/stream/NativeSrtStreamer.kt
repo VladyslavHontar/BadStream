@@ -10,11 +10,13 @@ import kotlin.concurrent.withLock
 class NativeSrtStreamer : RtmpStreamer {
     private var handle: Long = 0L
     private val lock = ReentrantLock()
+    @Volatile private var requestedCodec: VideoCodecType = VideoCodecType.AVC
 
     override fun start(
         endpoint: Endpoint, codec: VideoCodecType, width: Int, height: Int, fps: Int,
         sampleRate: Int, abr: AbrParams,
     ) = lock.withLock {
+        requestedCodec = codec
         val ep = endpoint as Endpoint.Srt
         if (handle == 0L) {
             handle = nativeCreate(
@@ -25,8 +27,8 @@ class NativeSrtStreamer : RtmpStreamer {
         nativeStart(handle)
     }
 
-    // SRT does not negotiate a codec; the requested codec is used as-is.
-    override fun negotiatedCodec(): VideoCodecType = VideoCodecType.AVC
+    // SRT does not negotiate a codec; the requested codec is used as-is (so HEVC/HDR is honoured).
+    override fun negotiatedCodec(): VideoCodecType = requestedCodec
 
     override fun state(): Int = lock.withLock { if (handle != 0L) nativeState(handle) else 0 }
     override fun bytesSent(): Long = lock.withLock { if (handle != 0L) nativeBytesSent(handle) else 0L }

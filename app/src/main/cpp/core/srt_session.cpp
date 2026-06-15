@@ -18,6 +18,8 @@ void SrtSession::Stop() {
         return;
     }
     queue_.Close();   // wake the drain loop so the thread exits promptly
+    // If a connect is in flight, interrupt it so the join doesn't wait out SRTO_CONNTIMEO.
+    { std::lock_guard<std::mutex> lk(linkMutex_); if (activeLink_) activeLink_->Interrupt(); }
     if (thread_.joinable()) thread_.join();
     state_ = SessionState::Idle;
 }
@@ -40,7 +42,12 @@ void SrtSession::SendAudio(const Bytes& aac, uint32_t pts) {
 
 void SrtSession::run() {
     SrtLink link;
-    if (!link.Connect(params_.host, params_.port, params_.streamid, params_.latencyMs)) {
+    // Expose the link to Stop() ONLY for the duration of the blocking Connect(), so a user
+    // Stop() during connect can Interrupt() it; clear it the moment Connect() returns.
+    { std::lock_guard<std::mutex> lk(linkMutex_); activeLink_ = &link; }
+    bool ok = link.Connect(params_.host, params_.port, params_.streamid, params_.latencyMs);
+    { std::lock_guard<std::mutex> lk(linkMutex_); activeLink_ = nullptr; }
+    if (!ok) {
         // Peer rejection (bad streamid/handshake) -> terminal; transient connect error ->
         // Dropped so the Kotlin reconnect loop retries. Skip the flash if a user Stop() already
         // cleared running_ (Stop() sets Idle).

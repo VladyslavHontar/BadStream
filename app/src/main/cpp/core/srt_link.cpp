@@ -152,4 +152,10 @@ void SrtLink::Close() {
     connected_ = false;
 }
 
+void SrtLink::Interrupt() {
+    // Closing the socket from another thread unblocks a blocking srt_connect(); leave sock_ as
+    // is so the owning thread's Close()/failure path tidies up (a second srt_close is benign).
+    if (sock_ != -1) srt_close(sock_);
+}
+
 }  // namespace ps

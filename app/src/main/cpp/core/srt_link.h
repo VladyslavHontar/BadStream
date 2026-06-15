@@ -40,6 +40,12 @@ public:
     // transient connect/network error (the caller should reconnect on the latter).
     bool rejected() const { return rejected_; }
 
+    // Close the socket from ANOTHER thread to unblock a blocking srt_connect() (so a user
+    // Stop() during connect returns promptly instead of waiting out SRTO_CONNTIMEO). Safe to
+    // call concurrently with Connect(); the connect then fails and run() exits. Does not reset
+    // sock_ (Connect()'s own failure path / Close() handle that — a double srt_close is benign).
+    void Interrupt();
+
 private:
     static constexpr int kPayloadSize = 1316;   // 7 x 188-byte TS packets
 

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -12,6 +13,8 @@
 #include "ts_muxer.h"
 
 namespace ps {
+
+class SrtLink;   // NDK-only (pulls in <srt/srt.h>); only used via pointer here.
 
 // SRT egress session, mirroring StreamSession's shape (dedicated egress thread draining the
 // shared MediaQueue; same Send* API + bytesSent/queueDepth/state with Dropped/Rejected so the
@@ -65,6 +68,12 @@ private:
     std::atomic<int> queueDepth_{0};
     std::atomic<int> targetBitrate_{0};
     std::atomic<bool> running_{false};
+
+    // Guards activeLink_, which run() points at its stack SrtLink ONLY during the blocking
+    // Connect(); Stop() takes the lock and Interrupt()s it so a stop during connect returns
+    // promptly. Null whenever no connect is in flight.
+    std::mutex linkMutex_;
+    SrtLink* activeLink_ = nullptr;
 };
 
 }  // namespace ps
