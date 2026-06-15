@@ -16,4 +16,10 @@ data class Settings(
     val codecOverride: CodecOverride = CodecOverride.Auto,
     val hdrEnabled: Boolean = false,
     val recordWhileStreaming: Boolean = false,
+    val obsHost: String = "",
+    val obsPort: Int = 4455,
+    val obsPassword: String = "",
+    val obsMainSceneName: String = "",
+    val obsBrbSceneName: String = "",
+    val obsAutoSwitchEnabled: Boolean = false,
 )

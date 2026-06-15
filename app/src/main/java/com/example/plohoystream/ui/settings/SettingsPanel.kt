@@ -108,6 +108,7 @@ fun SettingsPanel(viewModel: StreamViewModel, modifier: Modifier = Modifier) {
                         NavRow("Video", "${ui.settings.quality.height}p ${ui.settings.quality.fps}") { viewModel.navigateSettings(SettingsRoute.Video) }
                         NavRow("Audio", "${ui.settings.quality.audioBitrate / 1000} kbps") { viewModel.navigateSettings(SettingsRoute.Audio) }
                         NavRow("Camera", "") { viewModel.navigateSettings(SettingsRoute.Camera) }
+                        NavRow("OBS Remote", if (ui.obsConnected) "Connected" else ui.settings.obsHost.ifBlank { "Not set" }) { viewModel.navigateSettings(SettingsRoute.Obs) }
                         NavRow("About & Reset", "") { viewModel.navigateSettings(SettingsRoute.About) }
                     }
                 }
@@ -116,6 +117,7 @@ fun SettingsPanel(viewModel: StreamViewModel, modifier: Modifier = Modifier) {
                 SettingsRoute.Audio -> AudioSettings(viewModel)
                 SettingsRoute.Camera -> CameraSettings(viewModel)
                 SettingsRoute.About -> AboutSettings(viewModel)
+                SettingsRoute.Obs -> ObsSettings(viewModel)
             }
         }
     }

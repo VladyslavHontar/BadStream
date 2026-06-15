@@ -15,6 +15,11 @@ data class StreamUiState(
     // Settings panel nav.
     val panelOpen: Boolean = false,
     val settingsRoute: SettingsRoute = SettingsRoute.Root,
+    // OBS remote state
+    val obsConnected: Boolean = false,
+    val obsScenes: List<String> = emptyList(),
+    val obsCurrentScene: String? = null,
+    val obsStreaming: Boolean = false,
 ) {
     val canGoLive: Boolean
         get() = settings.rtmpUrl.isNotBlank() && settings.streamKey.isNotBlank() &&

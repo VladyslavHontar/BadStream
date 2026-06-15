@@ -9,6 +9,7 @@ import com.example.plohoystream.data.DataStoreSettingsStore
 import com.example.plohoystream.data.SettingsStore
 import com.example.plohoystream.media.CodecCapabilities
 import com.example.plohoystream.service.StreamForegroundService
+import com.example.plohoystream.stream.obs.ObsWebSocketController
 
 /**
  * Process-scoped owner of the live pipeline (engine + camera + settings store). Survives
@@ -26,6 +27,8 @@ object LivePipeline {
     lateinit var store: SettingsStore
         private set
     var hdrAvailable: Boolean = false
+        private set
+    lateinit var obs: ObsWebSocketController
         private set
 
     fun ensureInit(context: Context) {
@@ -97,6 +100,7 @@ object LivePipeline {
                 )
                 eng
             }
+            obs = ObsWebSocketController(engine.state, store.data)
             initialized = true
         }
     }

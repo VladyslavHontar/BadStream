@@ -4,6 +4,7 @@ import android.view.Surface
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.plohoystream.data.SettingsStore
+import com.example.plohoystream.stream.obs.ObsRemote
 import com.example.plohoystream.ui.settings.SettingsRoute
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +24,7 @@ class StreamViewModel(
     // Real-time clock for the 1s elapsed ticker. Kept off the (virtual) Main test dispatcher so
     // unit tests calling advanceUntilIdle() don't chase this perpetually-rescheduling loop forever.
     private val tickerDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val obs: ObsRemote? = null,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(StreamUiState(hdrAvailable = hdrAvailable))
     val uiState: StateFlow<StreamUiState> = _uiState.asStateFlow()
@@ -61,6 +63,13 @@ class StreamViewModel(
                 delay(1000)
             }
         }
+        // OBS remote state collectors (only if obs is provided)
+        obs?.let { remote ->
+            viewModelScope.launch { remote.connected.collect { v -> _uiState.update { it.copy(obsConnected = v) } } }
+            viewModelScope.launch { remote.scenes.collect { v -> _uiState.update { it.copy(obsScenes = v) } } }
+            viewModelScope.launch { remote.currentScene.collect { v -> _uiState.update { it.copy(obsCurrentScene = v) } } }
+            viewModelScope.launch { remote.obsStreaming.collect { v -> _uiState.update { it.copy(obsStreaming = v) } } }
+        }
     }
 
     /** Single write path: applies the transform optimistically to UI state AND persists it. */
@@ -75,6 +84,17 @@ class StreamViewModel(
     fun setQuality(q: VideoQuality) = mutate { it.copy(quality = q) }
     fun setCodecOverride(c: CodecOverride) = mutate { it.copy(codecOverride = c) }
     fun setRecordWhileStreaming(on: Boolean) = mutate { it.copy(recordWhileStreaming = on) }
+
+    fun setObsHost(value: String) = mutate { it.copy(obsHost = value) }
+    fun setObsPort(value: Int) = mutate { it.copy(obsPort = value) }
+    fun setObsPassword(value: String) = mutate { it.copy(obsPassword = value) }
+    fun setObsMainScene(value: String) = mutate { it.copy(obsMainSceneName = value) }
+    fun setObsBrbScene(value: String) = mutate { it.copy(obsBrbSceneName = value) }
+    fun setObsAutoSwitch(on: Boolean) = mutate { it.copy(obsAutoSwitchEnabled = on) }
+
+    fun obsSwitchScene(name: String) = obs?.switchScene(name)
+    fun obsStartStream() = obs?.startObsStream()
+    fun obsStopStream() = obs?.stopObsStream()
 
     fun openSettings() = _uiState.update { it.copy(panelOpen = true, settingsRoute = SettingsRoute.Root) }
     fun closeSettings() = _uiState.update { it.copy(panelOpen = false, settingsRoute = SettingsRoute.Root) }
