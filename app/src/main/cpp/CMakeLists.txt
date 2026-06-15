@@ -26,15 +26,30 @@ add_subdirectory(core)
 # System.loadLibrary() and pass the name of the library defined here;
 # for GameActivity/NativeActivity derived applications, the same library name must be
 # used in the AndroidManifest.xml file.
+# Prebuilt libsrt (one imported SHARED target per ABI). libsrt + the SRT egress code
+# (srt_link/srt_session) live ONLY in this JNI lib, NEVER in plohoystream_core, so the
+# host GoogleTest build (which links plohoystream_core) does not need libsrt.
+set(SRT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/srt)
+add_library(srt SHARED IMPORTED)
+set_target_properties(srt PROPERTIES
+        IMPORTED_LOCATION ${SRT_DIR}/libs/${ANDROID_ABI}/libsrt.so
+        INTERFACE_INCLUDE_DIRECTORIES ${SRT_DIR}/include)
+
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
-        native-lib.cpp)
+        native-lib.cpp
+        # SRT egress (NDK-only — needs libsrt; excluded from the host test build):
+        core/srt_link.cpp
+        core/srt_session.cpp)
+
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${SRT_DIR}/include)
 
 # Specifies libraries CMake should link to your target library. You
 # can link libraries from various origins, such as libraries defined in this
 # build script, prebuilt third-party libraries, or Android system libraries.
 target_link_libraries(${CMAKE_PROJECT_NAME}
         plohoystream_core
+        srt
         # List libraries link to the target library
         android
         log)
