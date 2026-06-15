@@ -59,6 +59,7 @@ class Camera2Controller(context: Context) : CameraController {
     private var minZoom = 1.0f
     private var maxZoom = 1.0f
     private var currentZoom = 1.0f
+    private var fpsRange: android.util.Range<Int>? = null
 
     @SuppressLint("MissingPermission")
     override fun start(config: CameraConfig, targets: List<Surface>, hdr: Boolean) {
@@ -75,6 +76,7 @@ class Camera2Controller(context: Context) : CameraController {
             reopenAttempts = 0 // fresh user-initiated start: reset the recovery budget
             minZoom = config.minZoom
             maxZoom = config.maxZoom
+            fpsRange = config.fpsRange
             currentZoom = CameraControls.clampZoom(currentZoom, minZoom, maxZoom)
 
             val open = device
@@ -191,6 +193,13 @@ class Camera2Controller(context: Context) : CameraController {
                 valid.forEach { addTarget(it) }
                 set(CaptureRequest.CONTROL_AF_MODE, CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
                 set(CaptureRequest.CONTROL_ZOOM_RATIO, currentZoom)
+                // Drive the requested capture cadence (e.g. 60fps). Some devices are picky
+                // about specific ranges/sizes, so apply defensively and fall back to default.
+                fpsRange?.let { range ->
+                    runCatching {
+                        set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, range)
+                    }.onFailure { Log.w(TAG, "AE fps range $range rejected; using default", it) }
+                }
             }
             requestBuilder = builder
             val sessionConfig = SessionConfiguration(
