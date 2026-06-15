@@ -3,7 +3,7 @@ package com.example.plohoystream.stream
 import android.content.Context
 import android.os.Environment
 import android.os.SystemClock
-import com.example.plohoystream.camera.Camera2Controller
+import com.example.plohoystream.camera.CameraController
 import com.example.plohoystream.camera.CameraEnumerator
 import com.example.plohoystream.data.DataStoreSettingsStore
 import com.example.plohoystream.data.SettingsStore
@@ -22,11 +22,15 @@ object LivePipeline {
 
     lateinit var engine: CameraStreamEngine
         private set
-    lateinit var camera: Camera2Controller
+    lateinit var camera: CameraController
         private set
     lateinit var store: SettingsStore
         private set
     var hdrAvailable: Boolean = false
+        private set
+    lateinit var encoderGate: com.example.plohoystream.camera.EncoderGate
+        private set
+    lateinit var codecOptions: List<com.example.plohoystream.camera.VideoCodecOption>
         private set
     lateinit var obs: ObsWebSocketController
         private set
@@ -36,13 +40,15 @@ object LivePipeline {
         synchronized(this) {
             if (initialized) return
             val appCtx = context.applicationContext
-            camera = Camera2Controller(appCtx)
+            camera = com.example.plohoystream.camera.CameraControllerFactory.create(appCtx)
             store = DataStoreSettingsStore(appCtx)
 
             val cameras = CameraEnumerator.enumerate(appCtx)
             val anyCameraHdr = cameras.any { it.supportsHdr }
             val hevcCaps = CodecCapabilities.hevc()
             hdrAvailable = CodecSelector.hdrAvailable(hevcCaps.main10, anyCameraHdr)
+            encoderGate = com.example.plohoystream.camera.EncoderGateFactory.fromDevice()
+            codecOptions = com.example.plohoystream.camera.CaptureMenu.codecOptions(encoderGate)
 
             engine = run {
                 var video: VideoEncoder? = null
