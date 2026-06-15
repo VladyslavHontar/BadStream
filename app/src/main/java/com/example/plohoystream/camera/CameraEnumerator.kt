@@ -50,10 +50,6 @@ object CameraEnumerator {
 
             val sensorOrientation = c.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
 
-            val fpsRanges = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-                ?.toList()
-                .orEmpty()
-
             val lensRatios = listOf(minZoom, 1.0f, 2.0f).filter { it in minZoom..maxZoom }
 
             val supportsHdr = if (android.os.Build.VERSION.SDK_INT >= 33) {
@@ -74,7 +70,6 @@ object CameraEnumerator {
                 hasOis = hasOis,
                 supportsHdr = supportsHdr,
                 sensorOrientation = sensorOrientation,
-                fpsRanges = fpsRanges,
             )
         }
     }

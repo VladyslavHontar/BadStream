@@ -32,7 +32,9 @@ import com.example.plohoystream.camera.CameraCapabilities
 import com.example.plohoystream.camera.CameraControls
 import com.example.plohoystream.camera.CameraEnumerator
 import com.example.plohoystream.camera.CameraTargets
+import com.example.plohoystream.camera.CameraXController
 import com.example.plohoystream.camera.Facing
+import com.example.plohoystream.camera.QualityOption
 import com.example.plohoystream.stream.LivePipeline
 import com.example.plohoystream.stream.StreamState
 import com.example.plohoystream.stream.StreamViewModel
@@ -55,6 +57,27 @@ fun Viewfinder(viewModel: StreamViewModel) {
     var surface by remember { mutableStateOf<Surface?>(null) }
     var zoom by remember { mutableStateOf(1f) }
 
+    // Capability-driven quality menu for the ACTIVE camera (CameraX CameraInfo) intersected with
+    // the device encoder gate. Hoisted here so the settings UI (Task 9) can consume it. Recomputed
+    // on facing change. ProcessCameraProvider.getInstance(...).get() blocks, so it runs on IO.
+    var qualityOptions by remember { mutableStateOf<List<QualityOption>>(emptyList()) }
+    LaunchedEffect(facing) {
+        runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val provider = androidx.camera.lifecycle.ProcessCameraProvider.getInstance(context).get()
+                val selector = if (facing == Facing.FRONT) androidx.camera.core.CameraSelector.DEFAULT_FRONT_CAMERA
+                else androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA
+                val info = provider.getCameraInfo(selector)
+                val probe = com.example.plohoystream.camera.CameraXComboProbe(info)
+                com.example.plohoystream.camera.CaptureMenu.generate(
+                    com.example.plohoystream.camera.CaptureMenu.CANDIDATES, probe,
+                    LivePipeline.encoderGate,
+                )
+            }
+        }.onSuccess { qualityOptions = it }
+            .onFailure { android.util.Log.w("Viewfinder", "menu generation failed", it) }
+    }
+
     val config = remember(cameras, facing, ui.settings.quality.fps) {
         CameraCapabilities.select(cameras, facing, ui.settings.quality.fps)
     }
@@ -72,6 +95,10 @@ fun Viewfinder(viewModel: StreamViewModel) {
 
     DisposableEffect(Unit) {
         onDispose {
+            // Preview is going away: null the controller's preview surface so the CameraX backend
+            // enters encoder-only (backgrounded) mode correctly — the encoder target is no longer
+            // misclassified as the preview.
+            (controller as? CameraXController)?.setPreviewSurface(null)
             // Detach preview only. If streaming, the camera must keep feeding the encoder, so
             // reconfigure to whatever targets remain (encoder-only) rather than stopping. If
             // idle (no encoder surface), stop the camera.
@@ -108,7 +135,11 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     bufferHeight = bufferH,
                     sensorOrientation = config?.sensorOrientation ?: 90,
                     isFrontFacing = facing == Facing.FRONT,
-                    onSurface = { surface = it },
+                    onSurface = {
+                        surface = it
+                        // The controller's preview surface is the source of truth for the preview.
+                        (controller as? CameraXController)?.setPreviewSurface(it)
+                    },
                 )
             }
             Box(modifier = Modifier.width(rightWidth).fillMaxHeight()) {
@@ -121,7 +152,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     label = "rail-settings",
                 ) { settingsOpen ->
                     if (settingsOpen) {
-                        SettingsPanel(viewModel, modifier = Modifier.fillMaxSize().padding(8.dp))
+                        SettingsPanel(
+                            viewModel,
+                            qualityOptions = qualityOptions,
+                            codecOptions = LivePipeline.codecOptions,
+                            modifier = Modifier.fillMaxSize().padding(8.dp),
+                        )
                     } else {
                         ControlRail(
                             state = ui.stream,
