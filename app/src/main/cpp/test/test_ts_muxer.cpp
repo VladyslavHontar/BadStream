@@ -412,3 +412,72 @@ TEST(TsMuxer, FfprobeCrossCheck) {
 
     std::remove(path.c_str());
 }
+
+// ---- Task 1.3: HEVC ----
+namespace {
+// Minimal HEVC Annex-B keyframe: VPS(32) + SPS(33) + PPS(34) + IDR_W_RADL slice(19).
+// HEVC NAL header is 2 bytes: (forbidden 0)(type<<1)(layer/tid). type = (byte0>>1)&0x3f.
+Bytes HevcKeyframe() {
+    return {0,0,0,1, 0x40,0x01, 0x0C,0x01,                 // VPS  (32<<1 = 0x40)
+            0,0,0,1, 0x42,0x01, 0x01,0x60,0x00,            // SPS  (33<<1 = 0x42)
+            0,0,0,1, 0x44,0x01, 0xC1,0x72,                 // PPS  (34<<1 = 0x44)
+            0,0,0,1, 0x26,0x01, 0xAF,0x06,0x80};           // IDR_W_RADL (19<<1 = 0x26)
+}
+Bytes HevcInterframe() {
+    return {0,0,0,1, 0x02,0x01, 0xD0,0x09};                // TRAIL_R (1<<1 = 0x02)
+}
+}  // namespace
+
+TEST(TsMuxer, HevcPmtStreamType24) {
+    TsMuxer m;
+    m.SetVideo(VideoCodecKind::Hevc);
+    Bytes out = m.WriteVideo(HevcKeyframe(), true, 0, 0);
+    auto pkts = ParseTsPackets(out);
+    auto pi = DiscoverProgram(out, pkts);
+    EXPECT_EQ(pi.videoType, 0x24) << "HEVC stream_type must be 0x24";
+    EXPECT_EQ(pi.pcrPid, pi.videoPid);
+}
+
+TEST(TsMuxer, HevcKeyframeCarriesVpsSpsPpsInBand) {
+    TsMuxer m;
+    m.SetVideo(VideoCodecKind::Hevc);
+    Bytes out = m.WriteVideo(HevcKeyframe(), true, 100, 100);
+    auto pkts = ParseTsPackets(out);
+    auto pi = DiscoverProgram(out, pkts);
+    Bytes pes = AssemblePid(out, pkts, pi.videoPid);
+    // PES header then payload; scan for VPS/SPS/PPS NAL types in the Annex-B payload.
+    bool vps=false, sps=false, pps=false, idr=false;
+    for (size_t i = 0; i + 5 < pes.size(); ++i) {
+        if (pes[i]==0 && pes[i+1]==0 && pes[i+2]==0 && pes[i+3]==1) {
+            int type = (pes[i+4] >> 1) & 0x3f;
+            if (type==32) vps=true; else if (type==33) sps=true;
+            else if (type==34) pps=true; else if (type==19||type==20) idr=true;
+        }
+    }
+    EXPECT_TRUE(vps); EXPECT_TRUE(sps); EXPECT_TRUE(pps); EXPECT_TRUE(idr);
+}
+
+TEST(TsMuxer, HevcVideoPesAndPtsAndCc) {
+    TsMuxer m;
+    m.SetVideo(VideoCodecKind::Hevc);
+    Bytes out;
+    auto k = m.WriteVideo(HevcKeyframe(), true, 0, 0);
+    out.insert(out.end(), k.begin(), k.end());
+    for (uint32_t t = 33; t <= 33*5; t += 33) {
+        auto f = m.WriteVideo(HevcInterframe(), false, t, t);
+        out.insert(out.end(), f.begin(), f.end());
+    }
+    auto pkts = ParseTsPackets(out);
+    auto pi = DiscoverProgram(out, pkts);
+    Bytes pes = AssemblePid(out, pkts, pi.videoPid);
+    EXPECT_EQ(pes[0], 0x00); EXPECT_EQ(pes[1], 0x00); EXPECT_EQ(pes[2], 0x01);
+    EXPECT_EQ(pes[3], 0xE0);            // video stream_id
+    EXPECT_EQ(DecodeTs(pes, 9), 0u);   // first PTS == 0
+    auto vpkts = PacketsOnPid(pkts, pi.videoPid);
+    ASSERT_GE(vpkts.size(), 2u);
+    int prev = vpkts[0].cc;
+    for (size_t i = 1; i < vpkts.size(); ++i) {
+        EXPECT_EQ(vpkts[i].cc, (prev + 1) & 0x0F);
+        prev = vpkts[i].cc;
+    }
+}
