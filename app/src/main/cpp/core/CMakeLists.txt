@@ -10,6 +10,7 @@ add_library(plohoystream_core STATIC
         tcp_transport.cpp
         stream_session.cpp
         mp4_writer.cpp
-        ts_muxer.cpp)
+        ts_muxer.cpp
+        abr.cpp)
 target_include_directories(plohoystream_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(plohoystream_core PUBLIC cxx_std_17)
