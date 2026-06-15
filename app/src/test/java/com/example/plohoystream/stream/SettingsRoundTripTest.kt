@@ -40,4 +40,14 @@ class SettingsRoundTripTest {
         assertEquals("rtmp://h/app", decoded.rtmpUrl)
         assertEquals("k", decoded.streamKey)
     }
+
+    @Test fun obsFields_roundTrip() {
+        val s = Settings(
+            obsHost = "192.168.1.42", obsPort = 4455, obsPassword = "pw",
+            obsMainSceneName = "Main", obsBrbSceneName = "BRB", obsAutoSwitchEnabled = true,
+        )
+        val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+        val back = json.decodeFromString(Settings.serializer(), json.encodeToString(Settings.serializer(), s))
+        assertEquals(s, back)
+    }
 }
