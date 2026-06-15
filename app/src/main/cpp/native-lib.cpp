@@ -4,6 +4,7 @@
 #include "stream_session.h"
 #include "tcp_transport.h"
 #include "mp4_writer.h"
+#include "srt_session.h"
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_plohoystream_MainActivity_stringFromJNI(
@@ -32,6 +33,7 @@ std::string ToStr(JNIEnv* env, jstring s) {
 }
 StreamSession* Self(jlong h) { return reinterpret_cast<StreamSession*>(h); }
 FragmentedMp4Writer* Rec(jlong h) { return reinterpret_cast<FragmentedMp4Writer*>(h); }
+SrtSession* Srt(jlong h) { return reinterpret_cast<SrtSession*>(h); }
 }
 
 extern "C" {
@@ -159,6 +161,86 @@ Java_com_example_plohoystream_stream_NativeRecorder_nativeStop(JNIEnv*, jobject,
 JNIEXPORT void JNICALL
 Java_com_example_plohoystream_stream_NativeRecorder_nativeDestroy(JNIEnv*, jobject, jlong h) {
     delete Rec(h);
+}
+
+// --- NativeSrtStreamer (SRT egress via SrtSession) ---
+
+JNIEXPORT jlong JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeCreate(
+        JNIEnv* env, jobject, jstring host, jint port, jstring streamid, jint latencyMs,
+        jint codec, jint sampleRate, jint channels,
+        jint abrMinBps, jint abrTargetBps, jint abrMaxBps) {
+    SrtSession::Params p;
+    p.host = ToStr(env, host);
+    p.port = port;
+    p.streamid = ToStr(env, streamid);
+    p.latencyMs = latencyMs;
+    p.video = (codec == 1) ? VideoCodecKind::Hevc : VideoCodecKind::Avc;
+    p.sampleRate = sampleRate;
+    p.channels = channels;
+    p.abr = AbrConfig{abrMinBps, abrTargetBps, abrMaxBps};
+    auto* s = new SrtSession(std::move(p));
+    return reinterpret_cast<jlong>(s);
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeStart(JNIEnv*, jobject, jlong h) {
+    if (h) Srt(h)->Start();
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeState(JNIEnv*, jobject, jlong h) {
+    return h ? static_cast<jint>(Srt(h)->state()) : 0; // 0=Idle,1=Connecting,2=Live,3=Dropped,4=Rejected
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeBytesSent(JNIEnv*, jobject, jlong h) {
+    return h ? static_cast<jlong>(Srt(h)->bytesSent()) : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeQueueDepth(JNIEnv*, jobject, jlong h) {
+    return h ? static_cast<jint>(Srt(h)->queueDepth()) : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeTargetBitrate(JNIEnv*, jobject, jlong h) {
+    return h ? static_cast<jint>(Srt(h)->targetBitrate()) : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeSendVideoConfig(
+        JNIEnv* env, jobject, jlong h, jbyteArray csd) {
+    if (h) Srt(h)->SendVideoConfig(ToBytes(env, csd));
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeSendVideo(
+        JNIEnv* env, jobject, jlong h, jbyteArray annexb, jboolean key, jlong pts, jlong dts) {
+    if (h) Srt(h)->SendVideo(ToBytes(env, annexb), key,
+                             static_cast<uint32_t>(pts), static_cast<uint32_t>(dts));
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeSendAudioConfig(
+        JNIEnv*, jobject, jlong h, jint sampleRate, jint channels) {
+    if (h) Srt(h)->SendAudioConfig(sampleRate, channels);
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeSendAudio(
+        JNIEnv* env, jobject, jlong h, jbyteArray aac, jlong pts) {
+    if (h) Srt(h)->SendAudio(ToBytes(env, aac), static_cast<uint32_t>(pts));
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeStop(JNIEnv*, jobject, jlong h) {
+    if (h) Srt(h)->Stop();
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_plohoystream_stream_NativeSrtStreamer_nativeDestroy(JNIEnv*, jobject, jlong h) {
+    delete Srt(h);
 }
 
 } // extern "C"

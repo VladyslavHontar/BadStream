@@ -21,10 +21,13 @@ import kotlinx.coroutines.launch
  * [startMedia]/[stopMedia] so the orchestration is unit-tested with fakes.
  */
 class CameraStreamEngine(
-    private val streamerFactory: () -> RtmpStreamer,
+    // The scheme lets the owner pick the native impl: RTMP -> NativeRtmpStreamer, SRT -> NativeSrtStreamer.
+    private val streamerFactory: (EndpointScheme) -> RtmpStreamer,
     // record (4th arg) = whether this go-live should also record locally (Settings.recordWhileStreaming).
     private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality, Boolean) -> Unit,
     private val stopMedia: () -> Unit,
+    // Applies an ABR-chosen encoder bitrate (bps) at runtime. No-op by default (RTMP / tests).
+    private val applyBitrate: (Int) -> Unit = {},
     private val pollIntervalMs: Long = 250,
     private val reconnectDelayMs: Long = 5000,
     private val hevcEncoder: Boolean = false,
@@ -70,8 +73,31 @@ class CameraStreamEngine(
     fun publishAudioLevel(level: Float) { _audioLevel.value = level }
 
     override fun start(config: StreamConfig) {
-        val endpoint = runCatching { RtmpEndpoint.parse(config.rtmpUrl, config.streamKey) }
-            .getOrElse { _state.value = StreamState.Error(it.message ?: "Bad URL"); return }
+        // SRT endpoints carry latency/streamid from settings (not the URL); RTMP delegates to its
+        // existing parser. A bad URL surfaces as Error and aborts before the reconnect loop.
+        val endpoint = runCatching {
+            when (Endpoint.schemeOf(config.rtmpUrl)) {
+                EndpointScheme.RTMP -> Endpoint.parse(config.rtmpUrl, config.streamKey)
+                EndpointScheme.SRT -> {
+                    val base = Endpoint.parse(config.rtmpUrl, config.streamKey) as Endpoint.Srt
+                    // URL query wins for streamid/latency when present; else fall back to settings.
+                    Endpoint.Srt(
+                        host = base.host,
+                        port = base.port,
+                        streamid = base.streamid.ifEmpty { config.srtStreamId },
+                        latencyMs = if (base.latencyMs != Endpoint.DEFAULT_SRT_LATENCY_MS) base.latencyMs else config.srtLatencyMs,
+                    )
+                }
+            }
+        }.getOrElse { _state.value = StreamState.Error(it.message ?: "Bad URL"); return }
+
+        val scheme = endpoint.scheme
+        val abr = AbrParams(
+            enabled = scheme == EndpointScheme.SRT && config.abrEnabled,
+            minBps = config.abrMinKbps * 1000,
+            targetBps = config.abrTargetKbps * 1000,
+            maxBps = config.abrMaxKbps * 1000,
+        )
 
         userWantsLive = true
         val quality = config.quality
@@ -87,10 +113,10 @@ class CameraStreamEngine(
             while (userWantsLive) {
                 mediaStarted = false
                 _state.value = StreamState.Connecting
-                val s = streamerFactory().also { streamer = it }
-                s.start(endpoint, requested.codec, width, height, fps, sampleRate)
+                val s = streamerFactory(scheme).also { streamer = it }
+                s.start(endpoint, requested.codec, width, height, fps, sampleRate, abr)
 
-                val outcome = runSession(s, requested, quality, config.recordWhileStreaming)
+                val outcome = runSession(s, requested, quality, config.recordWhileStreaming, abr)
 
                 // Per-attempt teardown (mirror of stop()'s media/flow cleanup, minus job cancel).
                 if (mediaStarted) stopMedia()
@@ -115,7 +141,10 @@ class CameraStreamEngine(
     }
 
     /** Polls native state for one connect attempt; returns why it ended. */
-    private suspend fun runSession(s: RtmpStreamer, requested: VideoFormat, quality: VideoQuality, record: Boolean): Outcome {
+    private suspend fun runSession(
+        s: RtmpStreamer, requested: VideoFormat, quality: VideoQuality, record: Boolean, abr: AbrParams,
+    ): Outcome {
+        var lastAppliedBps = -1   // per-attempt: only re-apply when the target actually moves
         while (userWantsLive) {
             when (s.state()) {
                 2 -> {
@@ -136,6 +165,15 @@ class CameraStreamEngine(
                         actualKbps = kbps,
                         targetKbps = quality.videoBitrate / 1000,
                     )
+                    // ABR (SRT only): poll the session's chosen target, clamp to [min,max], and
+                    // apply to the encoder only when it changed (rate-limited by the poll tick).
+                    if (abr.enabled) {
+                        val target = clampBitrate(s.targetBitrate(), abr)
+                        if (target > 0 && target != lastAppliedBps) {
+                            applyBitrate(target)
+                            lastAppliedBps = target
+                        }
+                    }
                 }
                 3 -> return Outcome.Dropped       // native Dropped (transient)
                 4 -> return Outcome.Rejected      // native Rejected (terminal)
@@ -166,5 +204,11 @@ class CameraStreamEngine(
     fun dispose() {
         stop()
         scope.cancel()
+    }
+
+    companion object {
+        /** Clamp an ABR-proposed bitrate (bps) to the configured [AbrParams] bounds. */
+        fun clampBitrate(bps: Int, abr: AbrParams): Int =
+            bps.coerceIn(abr.minBps, maxOf(abr.minBps, abr.maxBps))
     }
 }
