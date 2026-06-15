@@ -55,7 +55,9 @@ fun Viewfinder(viewModel: StreamViewModel) {
     var surface by remember { mutableStateOf<Surface?>(null) }
     var zoom by remember { mutableStateOf(1f) }
 
-    val config = remember(cameras, facing) { CameraCapabilities.select(cameras, facing) }
+    val config = remember(cameras, facing, ui.settings.quality.fps) {
+        CameraCapabilities.select(cameras, facing, ui.settings.quality.fps)
+    }
 
     LaunchedEffect(config, surface, encoderSurface, activeHdr) {
         val c = config ?: return@LaunchedEffect
