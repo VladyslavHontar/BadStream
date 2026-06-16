@@ -492,6 +492,27 @@ EgressSurfaceProcessor: onInputSurface #3 res=320x240
 
 Proceed to Task 2.
 
+## Task 5 verification result (Seeker, 2026-06-16)
+
+**Dual-camera PiP WORKS in the live preview.** Verified on-device:
+- ✅ Toggle appears only because the Seeker is supported (capability gate).
+- ✅ Dual ON → BACK full-frame + FRONT camera in the PiP inset (face clearly visible).
+- ✅ Toggle OFF → clean revert to single BACK camera, no PiP.
+- ✅ No crash through on/off cycles (and the earlier teardown fix guards updateTexImage).
+- ⏳ NOT yet verified: the composite in the actual encoded **stream/recording** (needs a live
+  session). It uses the same `renderComposite` path as the preview (encoder surface is rendered
+  identically), so it is expected to work — confirm on next live stream.
+
+**Two integration bugs found + fixed during verification (commits 3d21854, 181af91):**
+1. The toggle and the single-camera bind effect were two competing binders → dual bind got
+   clobbered by a single rebind. Fixed by centralizing binding in one `dualOn`-keyed effect.
+2. The secondary preview had no `SurfaceProvider`, so the front camera never streamed (black PiP).
+   Fixed by feeding the secondary camera directly into the renderer's 2nd texture via
+   `provideSecondarySurface` (no effect on the secondary).
+
+**Known polish items (for Plan 3 / follow-up):** PiP is fixed-position (Plan 3 adds drag/size/swap
+using `PipLayout`); confirm front-camera mirroring/orientation in the inset; verify the stream output.
+
 ## Risks / contingencies
 
 - **Concurrent bind rejects effects (Task 1 gate):** contingency is an `ImageReader`-based secondary feeding a texture upload — larger change, discuss with user first.
