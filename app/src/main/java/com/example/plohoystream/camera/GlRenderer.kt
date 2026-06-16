@@ -337,6 +337,7 @@ class GlRenderer {
         primaryTransform: FloatArray,
         secondaryTransform: FloatArray,
         pipLeft: Float, pipTop: Float, pipRight: Float, pipBottom: Float,
+        secSrcW: Int, secSrcH: Int,
         surface: Surface,
     ) {
         checkInitialized(); checkGlThread()
@@ -358,12 +359,31 @@ class GlRenderer {
         GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, primaryTransform, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        // 2) Secondary into the inset rect. Convert [0..1] top-left rect to an NDC scale+translate.
-        //    Quad spans [-1,1]; NDC center x = 2*cx-1, y = 1-2*cy (flip Y); scale = rect extent.
-        val cx = (pipLeft + pipRight) * 0.5f
-        val cy = (pipTop + pipBottom) * 0.5f
-        val sx = (pipRight - pipLeft)
-        val sy = (pipBottom - pipTop)
+        // 2) Secondary into the inset rect, fitted to the camera's aspect (centered) so it isn't
+        //    stretched. The secondary is rotated 90° (below), so its DISPLAY aspect swaps W/H:
+        //    displayAspect = srcH/srcW. Area of the box not covered by the fitted content just shows
+        //    the primary underneath (no letterbox bars). Quad spans [-1,1]; NDC center x = 2*cx-1,
+        //    y = 1-2*cy (flip Y); scale = rect extent.
+        val outW = outputSurface.width.toFloat()
+        val outH = outputSurface.height.toFloat()
+        val dispAspect = if (secSrcW > 0 && secSrcH > 0) secSrcH.toFloat() / secSrcW.toFloat() else 1f
+        val boxWpx = (pipRight - pipLeft) * outW
+        val boxHpx = (pipBottom - pipTop) * outH
+        val fitWpx: Float
+        val fitHpx: Float
+        if (boxWpx / boxHpx > dispAspect) {
+            fitHpx = boxHpx; fitWpx = boxHpx * dispAspect       // box wider than content → pillarbox
+        } else {
+            fitWpx = boxWpx; fitHpx = boxWpx / dispAspect       // box taller than content → letterbox
+        }
+        val fitWn = fitWpx / outW
+        val fitHn = fitHpx / outH
+        val fitL = pipLeft + ((pipRight - pipLeft) - fitWn) * 0.5f
+        val fitT = pipTop + ((pipBottom - pipTop) - fitHn) * 0.5f
+        val cx = fitL + fitWn * 0.5f
+        val cy = fitT + fitHn * 0.5f
+        val sx = fitWn
+        val sy = fitHn
         val pipMatrix = FloatArray(16)
         Matrix.setIdentityM(pipMatrix, 0)
         Matrix.translateM(pipMatrix, 0, 2f * cx - 1f, 1f - 2f * cy, 0f)

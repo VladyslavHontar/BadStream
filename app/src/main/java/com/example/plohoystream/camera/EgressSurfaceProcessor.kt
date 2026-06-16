@@ -43,6 +43,8 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     private var primaryTexture: SurfaceTexture? = null
     private var secondaryTexture: SurfaceTexture? = null
     private val secondaryTransform = FloatArray(16)
+    @Volatile private var secondarySrcW = 0
+    @Volatile private var secondarySrcH = 0
     @Volatile private var pipLayout = com.example.plohoystream.camera.PipLayout()
 
     fun setDualMode(on: Boolean) {
@@ -167,6 +169,8 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         executeSafely({
             val st = SurfaceTexture(renderer.textureName2)
             st.setDefaultBufferSize(request.resolution.width, request.resolution.height)
+            secondarySrcW = request.resolution.width
+            secondarySrcH = request.resolution.height
             secondaryTexture = st
             val sfc = Surface(st)
             request.provideSurface(sfc, glExecutor) {
@@ -275,13 +279,13 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 System.arraycopy(surfaceOutputTransform, 0, encoderTransform, 0, 16)
                 hasEncoderTransform = true
                 try {
-                    renderer.renderComposite(timestampNs, surfaceOutputTransform, secondaryTransform, r.left, r.top, r.right, r.bottom, surface)
+                    renderer.renderComposite(timestampNs, surfaceOutputTransform, secondaryTransform, r.left, r.top, r.right, r.bottom, secondarySrcW, secondarySrcH, surface)
                 } catch (e: RuntimeException) { Log.e(TAG, "composite preview render failed", e) }
             }
             encoderSurface?.let { surface ->
                 val transform = if (hasEncoderTransform) encoderTransform else textureTransform
                 try {
-                    renderer.renderComposite(timestampNs, transform, secondaryTransform, r.left, r.top, r.right, r.bottom, surface)
+                    renderer.renderComposite(timestampNs, transform, secondaryTransform, r.left, r.top, r.right, r.bottom, secondarySrcW, secondarySrcH, surface)
                 } catch (e: RuntimeException) { Log.e(TAG, "composite encoder render failed", e) }
             }
             return
