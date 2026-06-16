@@ -112,10 +112,10 @@ class GlRenderer {
 
         // Capture resolution for the frozen frame. Moderate (not tiny) so the gaussian — not raw
         // downscale aliasing — produces the blur. BLUR_SCALE widens the gaussian for a heavier look.
-        const val FROZEN_W = 360
-        const val FROZEN_H = 203
-        const val BLUR_SCALE = 2.0f
-        const val BLUR_ITERATIONS = 3   // each = one separable (H+V) gaussian pass
+        const val FROZEN_W = 854
+        const val FROZEN_H = 480
+        const val BLUR_SCALE = 3.0f
+        const val BLUR_ITERATIONS = 4   // each = one separable (H+V) gaussian pass
 
         const val SIZEOF_FLOAT = 4
         const val PIXEL_STRIDE = 4

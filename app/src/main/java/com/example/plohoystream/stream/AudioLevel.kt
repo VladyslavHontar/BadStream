@@ -13,7 +13,7 @@ fun rms16(pcm: ByteArray, lengthBytes: Int): Float {
     var i = 0
     while (i < n) {
         val lo = pcm[i * 2].toInt() and 0xFF
-        val hi = pcm[i * 2 + 1].toInt()           // signed: preserves the high byte's sign
+        val hi = pcm[i * 2 + 1].toInt()
         val sample = (hi shl 8) or lo
         val v = sample.toDouble() / 32768.0
         sumSq += v * v

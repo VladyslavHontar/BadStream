@@ -23,7 +23,7 @@ import com.example.plohoystream.ui.theme.SignatureFloatSpring
  * barely moves. Raise [METER_SENSITIVITY] for a livelier meter; lower it if it pins to the top.
  * Visual only — does NOT change the audio sent to the stream.
  */
-private const val METER_SENSITIVITY = 4f
+private const val METER_SENSITIVITY = 15f
 
 /** Horizontal audio meter: green (< .7) → amber (< .9) → red (clipping). [level] is 0..1. */
 @Composable
