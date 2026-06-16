@@ -64,7 +64,8 @@ Add this method to `CameraXController` (it does NOT touch the existing `start`/`
             val secondaryCfg = singleConfig(secondaryFacing, Size(640, 360), primary = false)
             registry.currentState = Lifecycle.State.STARTED
             try {
-                provider.bindToConcurrentCamera(listOf(primaryCfg, secondaryCfg))
+                // camera 1.6.1: concurrent binding is a bindToLifecycle overload taking the config list.
+                provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
                 Log.i(TAG, "bound dual: primary=$primaryFacing")
             } catch (e: Exception) {
                 Log.e(TAG, "concurrent bind failed; caller falls back to single", e)
@@ -91,11 +92,8 @@ Add this method to `CameraXController` (it does NOT touch the existing `start`/`
             .addEffect(effect)
             .build()
         val selector = if (facing == Facing.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-        return androidx.camera.core.ConcurrentCamera.SingleCameraConfig.Builder()
-            .setCameraSelector(selector)
-            .setUseCaseGroup(useCaseGroup)
-            .setLifecycleOwner(this)
-            .build()
+        // camera 1.6.1: SingleCameraConfig has a public constructor (no Builder).
+        return androidx.camera.core.ConcurrentCamera.SingleCameraConfig(selector, useCaseGroup, this)
     }
 ```
 
@@ -477,6 +475,22 @@ Confirm the PiP inset is correctly placed and oriented (not mirrored/upside down
 - [ ] **Step 3: Record result**
 
 Note pass/fail per check. If all pass, dual capture + fixed-PiP compositing works; proceed to Plan 3 (draggable/size/swap PiP using `PipLayout`). Finish the branch via superpowers:finishing-a-development-branch.
+
+## Spike result (Seeker, 2026-06-16)
+
+Task 1 GATE **PASSED**. Observed logs after `startDual(primary=BACK)`:
+
+```
+CameraXController: bound dual: primary=BACK
+EgressSurfaceProcessor: onInputSurface #2 res=960x720
+EgressSurfaceProcessor: onInputSurface #3 res=320x240
+```
+
+- `provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))` **accepts the `CameraEffect`/`SurfaceProcessor`** and binds both cameras — no exception, no crash, process alive.
+- **Two inputs delivered**, and the PRIMARY preview rendered on-screen (BACK camera).
+- **Resolution note:** the device overrode the requested 1280×720 / 640×360 to its concurrent-supported **960×720 / 320×240** (4:3). The "larger area = primary" routing in Task 3 still holds (960×720 ≫ 320×240) and matches bind order (primary bound first → input #2 first). Tasks 2–3 proceed; the PiP composite uses normalized coords so the 4:3 aspect is handled by the output surface.
+
+Proceed to Task 2.
 
 ## Risks / contingencies
 
