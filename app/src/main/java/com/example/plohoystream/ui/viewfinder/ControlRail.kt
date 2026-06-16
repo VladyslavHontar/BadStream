@@ -66,7 +66,7 @@ fun ControlRail(
                 HealthIndicator(health = health, bitrateKbps = bitrateKbps)
                 AudioMeter(level = audioLevel)
             }
-            ZoomChips(lenses = lenses, selectedZoom = selectedZoom, onSelect = onSelectLens)
+            // Lens chips replaced by the floating ZoomSlider over the preview (see Viewfinder).
             if (errorReason != null) {
                 Text(errorReason, color = LiveRed, style = MaterialTheme.typography.bodyMedium)
                 OutlinedButton(onClick = onGoLive) { Text("Try again") }
