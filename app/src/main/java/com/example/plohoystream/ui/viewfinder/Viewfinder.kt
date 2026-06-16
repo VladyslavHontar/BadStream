@@ -74,6 +74,15 @@ fun Viewfinder(viewModel: StreamViewModel) {
         (controller as? CameraXController)?.zoomRange ?: MutableStateFlow(1f..1f)
     }
     val zoomRange by zoomRangeFlow.collectAsStateWithLifecycle()
+    // Physical lenses (ultrawide/main/tele) + which one is bound, for the lens buttons.
+    val lensesFlow = remember(controller) {
+        (controller as? CameraXController)?.lenses ?: MutableStateFlow(emptyList())
+    }
+    val lenses by lensesFlow.collectAsStateWithLifecycle()
+    val selectedLensFlow = remember(controller) {
+        (controller as? CameraXController)?.selectedPhysicalId ?: MutableStateFlow<String?>(null)
+    }
+    val selectedPhysicalId by selectedLensFlow.collectAsStateWithLifecycle()
     var zoomVisible by remember { mutableStateOf(false) }
     var zoomNonce by remember { mutableStateOf(0) }
     LaunchedEffect(zoomNonce) {
@@ -258,11 +267,14 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             health = ui.health,
                             bitrateKbps = ui.bitrateKbps,
                             audioLevel = ui.audioLevel,
-                            lenses = config?.lenses.orEmpty(),
-                            selectedZoom = zoom,
+                            lenses = lenses,
+                            selectedPhysicalId = selectedPhysicalId,
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
-                            onSelectLens = { lens -> zoom = lens.zoomRatio; controller.setLens(lens) },
+                            onSelectLens = { lens ->
+                                zoom = 1f
+                                (controller as? CameraXController)?.selectLens(lens.physicalId)
+                            },
                             onFlip = { facing = CameraControls.opposite(facing); zoom = 1f },
                             onGoLive = viewModel::goLive,
                             onStop = viewModel::stop,

@@ -8,6 +8,13 @@ data class Resolution(val width: Int, val height: Int) {
 
 data class CameraLens(val label: String, val zoomRatio: Float)
 
+/**
+ * A selectable physical lens of the active logical camera (ultrawide / main / tele). [physicalId]
+ * is the Camera2 id used to bind it; [zoomRatio] is its intrinsic zoom relative to the main lens
+ * (≈0.6 ultrawide, 1.0 main, ≥2.0 tele) and drives the [label] (e.g. "0.6×").
+ */
+data class LensOption(val label: String, val physicalId: String, val zoomRatio: Float)
+
 data class CameraInfo(
     val id: String,
     val facing: Facing,
