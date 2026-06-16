@@ -134,16 +134,14 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         executeSafely({
             inputSurfaceCount++
             Log.i(TAG, "onInputSurface #$inputSurfaceCount res=${request.resolution.width}x${request.resolution.height} dual=$dualMode")
-            val isSecondary = dualMode && secondaryTexture == null && primaryTexture != null
-            val texName = if (isSecondary) renderer.textureName2 else renderer.textureName
-            val surfaceTexture = SurfaceTexture(texName)
+            // Only the PRIMARY camera flows through the effect/onInputSurface. The SECONDARY (PiP)
+            // camera is fed directly into the renderer's 2nd texture via [provideSecondarySurface].
+            val surfaceTexture = SurfaceTexture(renderer.textureName)
             surfaceTexture.setDefaultBufferSize(
                 request.resolution.width,
                 request.resolution.height,
             )
-            if (dualMode) {
-                if (isSecondary) secondaryTexture = surfaceTexture else primaryTexture = surfaceTexture
-            }
+            if (dualMode) primaryTexture = surfaceTexture
             val surface = Surface(surfaceTexture)
             request.provideSurface(surface, glExecutor) {
                 surfaceTexture.setOnFrameAvailableListener(null)
@@ -155,6 +153,37 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 checkReadyToRelease()
             }
             surfaceTexture.setOnFrameAvailableListener({ st -> onFrameAvailable(st) }, glHandler)
+        }, request::willNotProvideSurface)
+    }
+
+    /**
+     * SurfaceProvider sink for the SECONDARY (PiP) camera in dual mode. The second camera's CameraX
+     * [Preview] has NO effect and routes here directly: we hand it a SurfaceTexture bound to the
+     * renderer's 2nd OES texture and refresh that texture (+ its transform) on every frame, on the GL
+     * thread. The primary frame drives the actual composite. Safe to call from any thread.
+     */
+    fun provideSecondarySurface(request: SurfaceRequest) {
+        if (isReleaseRequested.get()) { request.willNotProvideSurface(); return }
+        executeSafely({
+            val st = SurfaceTexture(renderer.textureName2)
+            st.setDefaultBufferSize(request.resolution.width, request.resolution.height)
+            secondaryTexture = st
+            val sfc = Surface(st)
+            request.provideSurface(sfc, glExecutor) {
+                st.setOnFrameAvailableListener(null)
+                st.release()
+                sfc.release()
+                if (st === secondaryTexture) secondaryTexture = null
+            }
+            st.setOnFrameAvailableListener({ s ->
+                if (isReleaseRequested.get()) return@setOnFrameAvailableListener
+                try {
+                    s.updateTexImage()
+                    s.getTransformMatrix(secondaryTransform)
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "secondary updateTexImage failed (producer torn down?)", e)
+                }
+            }, glHandler)
         }, request::willNotProvideSurface)
     }
 
@@ -227,11 +256,6 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             surfaceTexture.getTransformMatrix(textureTransform)
         } catch (e: RuntimeException) {
             Log.w(TAG, "Skipping frame: updateTexImage failed (camera producer torn down?)", e)
-            return
-        }
-        // Secondary (PiP) camera: only refresh its texture; the primary frame drives the composite.
-        if (dualMode && surfaceTexture === secondaryTexture) {
-            System.arraycopy(textureTransform, 0, secondaryTransform, 0, 16)
             return
         }
         val timestampNs = surfaceTexture.timestamp

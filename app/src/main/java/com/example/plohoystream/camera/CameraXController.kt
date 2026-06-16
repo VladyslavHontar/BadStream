@@ -219,13 +219,17 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
                     androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
                 ),
             ).build()
+        // PRIMARY: routes through the GL effect to the on-screen preview + encoder (and composites).
+        // SECONDARY: no effect — feeds straight into the renderer's 2nd texture via the processor's
+        // secondary sink, so the PiP camera actually streams frames (a Preview with no consumer never
+        // starts its capture stream).
         val preview = Preview.Builder().setResolutionSelector(resolutionSelector).build().apply {
             if (primary) setSurfaceProvider(mainExecutor, UiSurfaceProvider())
+            else setSurfaceProvider(mainExecutor, Preview.SurfaceProvider { req -> processor.provideSecondarySurface(req) })
         }
-        val effect = EgressEffect(processor, mainExecutor)
         val useCaseGroup = androidx.camera.core.UseCaseGroup.Builder()
             .addUseCase(preview)
-            .addEffect(effect)
+            .apply { if (primary) addEffect(EgressEffect(processor, mainExecutor)) }
             .build()
         val selector = if (facing == Facing.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA
                        else CameraSelector.DEFAULT_BACK_CAMERA
