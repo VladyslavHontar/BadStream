@@ -102,14 +102,16 @@ fun Viewfinder(viewModel: StreamViewModel) {
     var previewTextureView by remember { mutableStateOf<android.view.TextureView?>(null) }
     var frozenFrame by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var transitionVisible by remember { mutableStateOf(false) }
+    var transitionHoldMs by remember { mutableStateOf(750L) }
     LaunchedEffect(transitionVisible, frozenFrame) {
         if (transitionVisible) {
-            delay(700)            // long enough for the new physical camera to open
+            delay(transitionHoldMs)
             transitionVisible = false
         }
     }
-    fun beginLensTransition() {
-        previewTextureView?.bitmap?.let { frozenFrame = it; transitionVisible = true }
+    // holdMs: a front/back flip reopens a different camera (slower) than a same-camera lens switch.
+    fun beginLensTransition(holdMs: Long) {
+        previewTextureView?.bitmap?.let { frozenFrame = it; transitionHoldMs = holdMs; transitionVisible = true }
     }
 
     // Capability-driven quality menu for the ACTIVE camera (CameraX CameraInfo) intersected with
@@ -292,12 +294,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
                             onSelectLens = { lens ->
-                                beginLensTransition()
+                                beginLensTransition(holdMs = 750L)
                                 zoom = 1f
                                 (controller as? CameraXController)?.selectLens(lens.physicalId)
                             },
                             onFlip = {
-                                beginLensTransition()
+                                beginLensTransition(holdMs = 1200L)
                                 facing = CameraControls.opposite(facing); zoom = 1f
                             },
                             onGoLive = viewModel::goLive,
