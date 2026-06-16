@@ -70,7 +70,14 @@ void SrtSession::run() {
     bool csdPrepended = false;
 
     MediaItem item;
-    bool haveBase = false;
+    // Gate the stream on the first video keyframe: the audio encoder produces frames immediately,
+    // but video only starts once the camera rebinds onto the encoder surface (hundreds of ms later).
+    // If we sent that leading audio, OBS/ffmpeg's mpegts demuxer would probe a start with no video
+    // and no PCR (the PCR rides the video PID) and fail stream detection for the WHOLE connection —
+    // the stream then "works" only after a reconnect re-probes a clean start. So we drop audio (and
+    // anchor the timeline) until the first IDR, making the opening bytes PAT/PMT + keyframe(+SPS/PPS)
+    // + PCR — exactly what a fresh demuxer needs.
+    bool started = false;
     uint32_t baseMs = 0;
     auto rebase = [&](uint32_t ts) -> uint32_t { return ts >= baseMs ? ts - baseMs : 0; };
 
@@ -87,7 +94,11 @@ void SrtSession::run() {
                     pendingCsd = item.data;   // hold for the next keyframe
                     break;
                 case MediaItem::Video: {
-                    if (!haveBase) { baseMs = item.dtsMs; haveBase = true; }
+                    if (!started) {
+                        if (!item.keyframe) break;       // wait for the first IDR to open the stream
+                        started = true;
+                        baseMs = item.dtsMs;             // timeline anchored at the first keyframe
+                    }
                     if (!csdPrepended && item.keyframe && !pendingCsd.empty()) {
                         Bytes au = pendingCsd;
                         au.insert(au.end(), item.data.begin(), item.data.end());
@@ -103,7 +114,7 @@ void SrtSession::run() {
                     muxer.SetAudio(item.sampleRate, item.channels);
                     break;
                 case MediaItem::Audio:
-                    if (!haveBase) { baseMs = item.ptsMs; haveBase = true; }
+                    if (!started) break;                 // drop audio until the first keyframe opens the stream
                     ts = muxer.WriteAudio(item.data, rebase(item.ptsMs));
                     break;
             }
