@@ -15,6 +15,24 @@ data class CameraLens(val label: String, val zoomRatio: Float)
  */
 data class LensOption(val label: String, val physicalId: String, val zoomRatio: Float)
 
+enum class ExposureMode { AUTO, MANUAL }
+
+/**
+ * Snapshot of the manual-exposure controls for the viewfinder. [supported] is false until a camera
+ * that exposes manual sensor control is bound; the panel hides then. In [ExposureMode.MANUAL] the
+ * shutter (sensor exposure time, ns) is fixed for motion blur and brightness is set by [iso] —
+ * either by the user (when [autoIso] is false) or by the shutter-priority metering loop (when true).
+ */
+data class ExposureState(
+    val supported: Boolean = false,
+    val mode: ExposureMode = ExposureMode.AUTO,
+    val shutterRangeNs: LongRange = 0L..0L,
+    val isoRange: IntRange = 0..0,
+    val shutterNs: Long = 0L,
+    val iso: Int = 0,
+    val autoIso: Boolean = true,
+)
+
 data class CameraInfo(
     val id: String,
     val facing: Facing,

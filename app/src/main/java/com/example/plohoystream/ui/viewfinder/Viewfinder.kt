@@ -10,6 +10,9 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
@@ -82,6 +85,13 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val selectedLensFlow = remember(controller) {
         (controller as? CameraXController)?.selectedPhysicalId ?: MutableStateFlow<String?>(null)
     }
+    // Manual exposure (shutter for motion blur + ISO). Panel toggled by a button over the preview.
+    val exposureFlow = remember(controller) {
+        (controller as? CameraXController)?.exposure
+            ?: MutableStateFlow(com.example.plohoystream.camera.ExposureState())
+    }
+    val exposure by exposureFlow.collectAsStateWithLifecycle()
+    var exposureOpen by remember { mutableStateOf(false) }
     val selectedPhysicalId by selectedLensFlow.collectAsStateWithLifecycle()
     var zoomVisible by remember { mutableStateOf(false) }
     var zoomNonce by remember { mutableStateOf(0) }
@@ -96,22 +106,6 @@ fun Viewfinder(viewModel: StreamViewModel) {
         zoom = target.coerceIn(zoomRange.start, zoomRange.endInclusive)
         controller.setZoom(zoom)
         zoomNonce++
-    }
-
-    // Lens-switch transition: freeze + blur the current frame to mask the camera-reopen gap.
-    var previewTextureView by remember { mutableStateOf<android.view.TextureView?>(null) }
-    var frozenFrame by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var transitionVisible by remember { mutableStateOf(false) }
-    var transitionHoldMs by remember { mutableStateOf(750L) }
-    LaunchedEffect(transitionVisible, frozenFrame) {
-        if (transitionVisible) {
-            delay(transitionHoldMs)
-            transitionVisible = false
-        }
-    }
-    // holdMs: a front/back flip reopens a different camera (slower) than a same-camera lens switch.
-    fun beginLensTransition(holdMs: Long) {
-        previewTextureView?.bitmap?.let { frozenFrame = it; transitionHoldMs = holdMs; transitionVisible = true }
     }
 
     // Capability-driven quality menu for the ACTIVE camera (CameraX CameraInfo) intersected with
@@ -248,12 +242,6 @@ fun Viewfinder(viewModel: StreamViewModel) {
                         // The controller's preview surface is the source of truth for the preview.
                         (controller as? CameraXController)?.setPreviewSurface(it)
                     },
-                    onTextureView = { previewTextureView = it },
-                )
-                FreezeBlurOverlay(
-                    bitmap = frozenFrame,
-                    visible = transitionVisible,
-                    modifier = Modifier.matchParentSize(),
                 )
                 ZoomSlider(
                     zoom = zoom,
@@ -265,6 +253,44 @@ fun Viewfinder(viewModel: StreamViewModel) {
                         .fillMaxWidth(0.7f)
                         .padding(bottom = 24.dp),
                 )
+                val cam = controller as? CameraXController
+                if (exposure.supported) {
+                    // Top-left toggle for the exposure panel; label reflects current state.
+                    val expLabel = if (exposure.mode == com.example.plohoystream.camera.ExposureMode.MANUAL) "EXP•" else "EXP"
+                    androidx.compose.foundation.layout.Box(
+                        Modifier
+                            .align(Alignment.TopStart)
+                            .padding(12.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(
+                                if (exposureOpen) com.example.plohoystream.ui.theme.OnSurfaceWhite
+                                else androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.5f)
+                            )
+                            .clickable { exposureOpen = !exposureOpen }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                    ) {
+                        androidx.compose.material3.Text(
+                            expLabel,
+                            color = if (exposureOpen) androidx.compose.ui.graphics.Color.Black
+                                    else com.example.plohoystream.ui.theme.OnSurfaceWhite,
+                            style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                    ExposurePanel(
+                        state = exposure,
+                        fps = config?.targetFps ?: 30,
+                        visible = exposureOpen,
+                        onAuto = { cam?.setExposureAuto() },
+                        onManual = { cam?.setExposureManual() },
+                        onShutterNs = { cam?.setShutterNs(it) },
+                        onIso = { cam?.setIso(it) },
+                        onAutoIso = { cam?.setAutoIso(it) },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(start = 12.dp, top = 58.dp)
+                            .width(300.dp),
+                    )
+                }
             }
             Box(modifier = Modifier.width(rightWidth).fillMaxHeight()) {
                 AnimatedContent(
@@ -294,14 +320,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
                             onSelectLens = { lens ->
-                                beginLensTransition(holdMs = 750L)                 // preview overlay
-                                (controller as? CameraXController)?.beginCameraTransition()  // stream
+                                (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
                                 zoom = 1f
                                 (controller as? CameraXController)?.selectLens(lens.physicalId)
                             },
                             onFlip = {
-                                beginLensTransition(holdMs = 1200L)
-                                (controller as? CameraXController)?.beginCameraTransition()
+                                (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
                                 facing = CameraControls.opposite(facing); zoom = 1f
                             },
                             onGoLive = viewModel::goLive,

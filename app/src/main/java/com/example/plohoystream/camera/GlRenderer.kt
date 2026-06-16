@@ -117,6 +117,8 @@ class GlRenderer {
         const val BLUR_SCALE = 3.0f
         const val BLUR_ITERATIONS = 4   // each = one separable (H+V) gaussian pass
 
+        const val METER_SIZE = 16       // luma-metering FBO side (auto-ISO): tiny, averaged on CPU
+
         const val SIZEOF_FLOAT = 4
         const val PIXEL_STRIDE = 4
 
@@ -205,6 +207,12 @@ class GlRenderer {
     private var pingFbo = -1      // intermediate for the separable gaussian
     private var pingTexId = -1
 
+    // Auto-ISO luma metering: render the live frame into a tiny FBO, read it back, average on CPU.
+    private var meterFbo = -1
+    private var meterTexId = -1
+    private val meterBuf: ByteBuffer =
+        ByteBuffer.allocateDirect(METER_SIZE * METER_SIZE * PIXEL_STRIDE).order(ByteOrder.nativeOrder())
+
     /** External OES texture id the camera renders into. Valid after [init]. */
     val textureName: Int
         get() {
@@ -238,8 +246,25 @@ class GlRenderer {
     fun registerOutputSurface(surface: Surface) {
         checkInitialized()
         checkGlThread()
+        purgeInvalidOutputSurfaces()
         if (!outputSurfaceMap.containsKey(surface)) {
             outputSurfaceMap[surface] = NO_OUTPUT_SURFACE
+            Log.d(TAG, "registerOutputSurface ${surface.hashCode()} valid=${surface.isValid} (total=${outputSurfaceMap.size})")
+        }
+    }
+
+    /**
+     * Destroys EGL window surfaces whose backing [Surface] is no longer valid (e.g. a TextureView
+     * replaced on resume). Preview EGL surfaces are otherwise kept alive across camera/lens switches
+     * (the close of a CameraX SurfaceOutput does NOT tear them down — see
+     * [com.example.plohoystream.camera.EgressSurfaceProcessor.onOutputSurface]); this is the GC that
+     * reclaims the ones that truly went away.
+     */
+    private fun purgeInvalidOutputSurfaces() {
+        val dead = outputSurfaceMap.keys.filter { !it.isValid }
+        for (s in dead) {
+            Log.d(TAG, "purging invalid output surface ${s.hashCode()}")
+            removeOutputSurfaceInternal(s, true)
         }
     }
 
@@ -329,12 +354,11 @@ class GlRenderer {
     fun renderFrozen(timestampNs: Long, surface: Surface) {
         checkInitialized()
         checkGlThread()
-        var outputSurface = getOutSurfaceOrThrow(surface)
-        if (outputSurface === NO_OUTPUT_SURFACE) {
-            val created = createOutputSurfaceInternal(surface) ?: return
-            outputSurfaceMap[surface] = created
-            outputSurface = created
-        }
+        // Best-effort cover: only render to a surface that already has a live EGL window surface.
+        // Never CREATE one here — a surface mid-swap (e.g. during a camera switch) would fail with
+        // EGL_BAD_ALLOC; the next live render() creates it cleanly once CameraX has settled.
+        val outputSurface = outputSurfaceMap[surface]
+        if (outputSurface == null || outputSurface === NO_OUTPUT_SURFACE) return
         makeCurrent(outputSurface.eglSurface)
         currentSurface = surface
         GLES20.glViewport(0, 0, outputSurface.width, outputSurface.height)
@@ -562,12 +586,12 @@ class GlRenderer {
         blurOffsetLoc = GLES20.glGetUniformLocation(program, "uTexelOffset")
     }
 
-    private fun newFboTexture(): Pair<Int, Int> {
+    private fun newFboTexture(w: Int = FROZEN_W, h: Int = FROZEN_H): Pair<Int, Int> {
         val tex = IntArray(1)
         GLES20.glGenTextures(1, tex, 0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0])
         GLES20.glTexImage2D(
-            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, FROZEN_W, FROZEN_H, 0,
+            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
             GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null,
         )
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
@@ -587,7 +611,40 @@ class GlRenderer {
     private fun createFrozenFbo() {
         val (ffbo, ftex) = newFboTexture(); frozenFbo = ffbo; frozenTexId = ftex
         val (pfbo, ptex) = newFboTexture(); pingFbo = pfbo; pingTexId = ptex
+        val (mfbo, mtex) = newFboTexture(METER_SIZE, METER_SIZE); meterFbo = mfbo; meterTexId = mtex
         checkGlErrorOrThrow("createFrozenFbo")
+    }
+
+    /**
+     * Measure the average luma (0..1) of the current camera frame for shutter-priority Auto-ISO.
+     * Renders the external texture into the tiny [METER_SIZE]² FBO (the GPU box-filters it down via
+     * the linear sampler) and reads it back. [textureTransform] orients the sample like the preview.
+     * A glReadPixels stall — kept cheap by the size and the caller's throttling. Restores GL state.
+     */
+    fun meterLuma(textureTransform: FloatArray): Float {
+        checkInitialized()
+        checkGlThread()
+        bindMainProgram()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, meterFbo)
+        GLES20.glViewport(0, 0, METER_SIZE, METER_SIZE)
+        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
+        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, textureTransform, 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        meterBuf.rewind()
+        GLES20.glReadPixels(0, 0, METER_SIZE, METER_SIZE, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, meterBuf)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        currentSurface = null   // force viewport reset on the next live render()
+        meterBuf.rewind()
+        var sum = 0.0
+        val px = METER_SIZE * METER_SIZE
+        for (i in 0 until px) {
+            val r = meterBuf.get().toInt() and 0xFF
+            val g = meterBuf.get().toInt() and 0xFF
+            val b = meterBuf.get().toInt() and 0xFF
+            meterBuf.get()   // skip alpha
+            sum += 0.299 * r + 0.587 * g + 0.114 * b
+        }
+        return (sum / px / 255.0).toFloat()
     }
 
     /** One separable-gaussian pass: blur [srcTexId] into [dstFbo] with the given texel offset. */
@@ -634,21 +691,54 @@ class GlRenderer {
     }
 
     private fun createOutputSurfaceInternal(surface: Surface): OutputSurface? {
-        val eglSurface: EGLSurface = try {
-            // TODO(HDR): pass an HLG colorspace attrib list
-            //  (EGL_GL_COLORSPACE_KHR / EGL_GL_COLORSPACE_BT2020_HLG_EXT) here for 10-bit output.
-            val s = EGL14.eglCreateWindowSurface(
-                eglDisplay, requireNotNull(eglConfig), surface, EMPTY_ATTRIBS, 0,
-            )
-            checkEglErrorOrThrow("eglCreateWindowSurface")
-            checkNotNull(s) { "surface was null" }
-            s
-        } catch (e: RuntimeException) {
-            Log.w(TAG, "Failed to create EGL surface: ${e.message}", e)
-            return null
+        // EGL_BAD_ALLOC (0x3003) here almost always means another, stale EGL window surface still
+        // holds this native window — e.g. a previous preview SurfaceOutput on the same TextureView
+        // SurfaceTexture that outlived a background→resume rebind. A native window can feed only one
+        // EGL window surface at a time. Reclaim every cached window surface (each live output lazily
+        // recreates its own on the next render) to free the window, then try once more.
+        val eglSurface = tryCreateWindowSurface(surface) ?: run {
+            Log.w(TAG, "eglCreateWindowSurface failed; reclaiming stale window surfaces and retrying")
+            reclaimAllWindowSurfaces()
+            tryCreateWindowSurface(surface) ?: return null
         }
         val size = querySurfaceSize(eglSurface)
         return OutputSurface(eglSurface, size.width, size.height)
+    }
+
+    private fun tryCreateWindowSurface(surface: Surface): EGLSurface? = try {
+        // TODO(HDR): pass an HLG colorspace attrib list
+        //  (EGL_GL_COLORSPACE_KHR / EGL_GL_COLORSPACE_BT2020_HLG_EXT) here for 10-bit output.
+        val s = EGL14.eglCreateWindowSurface(
+            eglDisplay, requireNotNull(eglConfig), surface, EMPTY_ATTRIBS, 0,
+        )
+        checkEglErrorOrThrow("eglCreateWindowSurface")
+        checkNotNull(s) { "surface was null" }
+        s
+    } catch (e: RuntimeException) {
+        Log.w(TAG, "Failed to create EGL surface: ${e.message}", e)
+        null
+    }
+
+    /**
+     * Destroys every cached EGL window surface and resets each registered output to
+     * [NO_OUTPUT_SURFACE]. Used to recover from a wedged native window (see
+     * [createOutputSurfaceInternal]): the conflicting window surface may be keyed under a different,
+     * now-stale [Surface], so we free all of them. Each still-live output recreates its own window
+     * surface lazily on its next [render]; this costs at most one dropped frame per output.
+     */
+    private fun reclaimAllWindowSurfaces() {
+        // Drop off the current window so its EGL surface can be destroyed.
+        if (currentSurface != null) {
+            currentSurface = null
+            makeCurrent(tempSurface)
+        }
+        for (key in outputSurfaceMap.keys.toList()) {
+            val out = outputSurfaceMap[key]
+            if (out != null && out !== NO_OUTPUT_SURFACE && out.eglSurface != EGL14.EGL_NO_SURFACE) {
+                runCatching { EGL14.eglDestroySurface(eglDisplay, out.eglSurface) }
+            }
+            outputSurfaceMap[key] = NO_OUTPUT_SURFACE
+        }
     }
 
     private fun querySurfaceSize(eglSurface: EGLSurface): Size {
@@ -673,6 +763,7 @@ class GlRenderer {
         if (removed != null && removed !== NO_OUTPUT_SURFACE) {
             try {
                 EGL14.eglDestroySurface(eglDisplay, removed.eglSurface)
+                Log.d(TAG, "destroyed EGL surface for ${surface.hashCode()} (unregister=$unregister)")
             } catch (e: RuntimeException) {
                 Log.w(TAG, "Failed to destroy EGL surface: ${e.message}", e)
             }
@@ -703,6 +794,14 @@ class GlRenderer {
         if (pingTexId != -1) {
             GLES20.glDeleteTextures(1, intArrayOf(pingTexId), 0)
             pingTexId = -1
+        }
+        if (meterFbo != -1) {
+            GLES20.glDeleteFramebuffers(1, intArrayOf(meterFbo), 0)
+            meterFbo = -1
+        }
+        if (meterTexId != -1) {
+            GLES20.glDeleteTextures(1, intArrayOf(meterTexId), 0)
+            meterTexId = -1
         }
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(
