@@ -134,20 +134,32 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val currentEncoder by rememberUpdatedState(encoderSurface)
     val currentHdr by rememberUpdatedState(activeHdr)
     val currentZoom by rememberUpdatedState(zoom)
+    var resumed by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                val c = currentConfig ?: return@LifecycleEventObserver
-                val targets = CameraTargets.select(currentSurface, currentEncoder)
-                if (targets.isNotEmpty()) {
-                    controller.start(c, targets, hdr = currentHdr)
-                    controller.setZoom(currentZoom)
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    resumed = true
+                    val c = currentConfig
+                    val targets = CameraTargets.select(currentSurface, currentEncoder)
+                    if (c != null && targets.isNotEmpty()) {
+                        controller.start(c, targets, hdr = currentHdr)
+                        controller.setZoom(currentZoom)
+                    }
                 }
+                Lifecycle.Event.ON_PAUSE -> resumed = false
+                else -> {}
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Preview-time mic level meter: run the monitor only while foreground AND not streaming (the
+    // streaming AudioEncoder owns the mic when live and publishes its own level).
+    LaunchedEffect(resumed, ui.isActive) {
+        if (resumed && !ui.isActive) LivePipeline.micMonitor.start() else LivePipeline.micMonitor.stop()
     }
 
     DisposableEffect(Unit) {

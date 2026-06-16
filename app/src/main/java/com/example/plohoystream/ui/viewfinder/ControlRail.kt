@@ -64,8 +64,9 @@ fun ControlRail(
             LiveStatusCluster(live = live, elapsed = elapsed, reconnecting = reconnecting)
             if (live) {
                 HealthIndicator(health = health, bitrateKbps = bitrateKbps)
-                AudioMeter(level = audioLevel)
             }
+            // Audio meter shows during preview too (driven by MicMonitor when not streaming).
+            AudioMeter(level = audioLevel)
             // Lens chips replaced by the floating ZoomSlider over the preview (see Viewfinder).
             if (errorReason != null) {
                 Text(errorReason, color = LiveRed, style = MaterialTheme.typography.bodyMedium)
