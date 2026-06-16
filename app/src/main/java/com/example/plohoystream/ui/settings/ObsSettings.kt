@@ -10,12 +10,20 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.ExposedDropdownMenuAnchorType
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,23 +83,17 @@ fun ObsSettings(viewModel: StreamViewModel) {
             )
         }
 
-        // OBS Stream control
-        Row(
+        // OBS Stream control — single toggle (label/colour follow the live state).
+        Button(
+            onClick = { if (ui.obsStreaming) viewModel.obsStopStream() else viewModel.obsStartStream() },
+            enabled = ui.obsConnected,
+            colors = if (ui.obsStreaming) {
+                ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            } else {
+                ButtonDefaults.buttonColors()
+            },
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Button(
-                onClick = viewModel::obsStartStream,
-                enabled = ui.obsConnected && !ui.obsStreaming,
-                modifier = Modifier.weight(1f),
-            ) { Text("Start OBS Stream") }
-            Button(
-                onClick = viewModel::obsStopStream,
-                enabled = ui.obsConnected && ui.obsStreaming,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                modifier = Modifier.weight(1f),
-            ) { Text("Stop OBS Stream") }
-        }
+        ) { Text(if (ui.obsStreaming) "Stop OBS Stream" else "Start OBS Stream") }
 
         // Scene list
         if (ui.obsScenes.isNotEmpty()) {
@@ -120,17 +122,17 @@ fun ObsSettings(viewModel: StreamViewModel) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Text("BRB Auto-Switch", color = OnSurfaceMuted, style = MaterialTheme.typography.labelMedium)
 
-            OutlinedTextField(
-                value = s.obsMainSceneName, onValueChange = viewModel::setObsMainScene,
-                label = { Text("Main Scene") }, singleLine = true,
-                placeholder = { Text("Main") },
-                modifier = Modifier.fillMaxWidth(),
+            SceneDropdown(
+                label = "Main Scene",
+                selected = s.obsMainSceneName,
+                scenes = ui.obsScenes,
+                onSelect = viewModel::setObsMainScene,
             )
-            OutlinedTextField(
-                value = s.obsBrbSceneName, onValueChange = viewModel::setObsBrbScene,
-                label = { Text("BRB Scene") }, singleLine = true,
-                placeholder = { Text("BRB") },
-                modifier = Modifier.fillMaxWidth(),
+            SceneDropdown(
+                label = "BRB Scene",
+                selected = s.obsBrbSceneName,
+                scenes = ui.obsScenes,
+                onSelect = viewModel::setObsBrbScene,
             )
 
             Row(
@@ -142,6 +144,52 @@ fun ObsSettings(viewModel: StreamViewModel) {
                 Switch(
                     checked = s.obsAutoSwitchEnabled,
                     onCheckedChange = viewModel::setObsAutoSwitch,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A scene picker backed by the live OBS scene list. When connected it offers the real scenes
+ * (no typos possible); when not connected it still shows the saved value and a hint, so a
+ * previously-chosen scene is never silently lost. A saved scene missing from the current list is
+ * kept as a selectable option so renames/disconnects don't reset the choice.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SceneDropdown(
+    label: String,
+    selected: String,
+    scenes: List<String>,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val options = (scenes + selected).filter { it.isNotBlank() }.distinct()
+    val enabled = options.isNotEmpty()
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { if (enabled) expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = selected,
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(label) },
+            placeholder = { Text(if (enabled) "Select scene" else "Connect to OBS to choose") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            enabled = enabled,
+            modifier = Modifier
+                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { scene ->
+                DropdownMenuItem(
+                    text = { Text(scene) },
+                    onClick = { onSelect(scene); expanded = false },
                 )
             }
         }

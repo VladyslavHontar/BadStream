@@ -20,6 +20,9 @@ import androidx.core.util.Consumer
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.Executor
 
 /**
@@ -61,6 +64,11 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     private var currentZoom = 1.0f
     private var minZoom = 1.0f
     private var maxZoom = 1.0f
+
+    private val _zoomRange = MutableStateFlow(1f..1f)
+    /** CameraX's authoritative zoom range for the bound camera (e.g. 1.0..10.0). The UI reads this
+     *  so the zoom slider spans exactly what the device can do — no unreachable sub-1.0 region. */
+    val zoomRange: StateFlow<ClosedFloatingPointRange<Float>> = _zoomRange.asStateFlow()
 
     private var camera: Camera? = null
 
@@ -157,6 +165,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         registry.currentState = Lifecycle.State.STARTED
         try {
             camera = provider.bindToLifecycle(this, selector, sessionConfig)
+            adoptRealZoomRange()
             camera?.cameraControl?.setZoomRatio(currentZoom)
             Log.i(TAG, "bound ${config.facing} fps=${config.targetFps} hdr=$lastHdr features=$features")
         } catch (e: Exception) {
@@ -180,10 +189,26 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         try {
             registry.currentState = Lifecycle.State.STARTED
             camera = provider.bindToLifecycle(this, selector, fallback)
+            adoptRealZoomRange()
             camera?.cameraControl?.setZoomRatio(currentZoom)
             Log.i(TAG, "bound without feature group")
         } catch (e: Exception) {
             Log.e(TAG, "fallback bind failed", e)
+        }
+    }
+
+    /**
+     * Replace the Camera2-enumerated zoom bounds with CameraX's authoritative [androidx.camera.core.ZoomState]
+     * for the camera it actually bound. `setZoomRatio` clamps to THIS range, so a lens chip like 0.6×
+     * only does anything if CameraX reports a sub-1.0 minimum — the log makes the real range visible.
+     */
+    private fun adoptRealZoomRange() {
+        camera?.cameraInfo?.zoomState?.value?.let { zs ->
+            minZoom = zs.minZoomRatio
+            maxZoom = zs.maxZoomRatio
+            _zoomRange.value = zs.minZoomRatio..zs.maxZoomRatio
+            currentZoom = CameraControls.clampZoom(currentZoom, minZoom, maxZoom)
+            Log.i(TAG, "CameraX zoom range = ${zs.minZoomRatio}..${zs.maxZoomRatio}")
         }
     }
 

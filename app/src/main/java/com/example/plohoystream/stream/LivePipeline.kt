@@ -34,6 +34,8 @@ object LivePipeline {
         private set
     lateinit var obs: ObsWebSocketController
         private set
+    lateinit var micMonitor: MicMonitor
+        private set
 
     fun ensureInit(context: Context) {
         if (initialized) return
@@ -65,6 +67,7 @@ object LivePipeline {
                     cameraHdr = anyCameraHdr,
                     startMedia = { streamer, fmt, quality, record ->
                         StreamForegroundService.start(appCtx)
+                        micMonitor.stop()   // release the mic so the encoder's AudioRecord can open it
                         // Capture both clocks at the same instant as the shared epoch (M2-B A/V sync).
                         val nanoT0 = System.nanoTime()
                         val bootT0 = SystemClock.elapsedRealtimeNanos()
@@ -110,6 +113,9 @@ object LivePipeline {
                 eng
             }
             obs = ObsWebSocketController(engine.state, store.data)
+            // Preview-time mic level → same channel the streaming encoder publishes to, so the
+            // audio meter is alive before go-live. Driven (start/stop) by the Viewfinder lifecycle.
+            micMonitor = MicMonitor(onLevel = { lvl -> engine.publishAudioLevel(lvl) })
             initialized = true
         }
     }

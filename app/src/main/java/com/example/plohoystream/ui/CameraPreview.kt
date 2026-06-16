@@ -111,9 +111,10 @@ fun CameraPreview(
  * a 90° preview). We apply identity; the TextureView scales the already-upright buffer to fill the
  * (aspect-matched) view.
  *
- * The one thing CameraX's raw `Preview.SurfaceProvider` path does not do is mirror the front
- * camera, so we still apply a horizontal flip there for a natural selfie preview. This never
- * touches the [SurfaceTexture] buffer, so the shared MediaCodec encoder surface is unaffected.
+ * CameraX already mirrors the front camera in its `SurfaceOutput` transform, so we must NOT add a
+ * second flip here — doing so cancels it out and the selfie preview comes back un-mirrored. We
+ * apply identity for every camera and let CameraX own orientation AND mirroring. [isFrontFacing]
+ * is kept for call-site symmetry but intentionally unused.
  */
 private fun applyPreviewTransform(
     context: Context,
@@ -125,11 +126,5 @@ private fun applyPreviewTransform(
     isFrontFacing: Boolean,
 ) {
     if (viewW == 0 || viewH == 0) return
-    val matrix = Matrix()
-    if (isFrontFacing) {
-        // Mirror horizontally for a natural selfie preview (CameraX's SurfaceProvider path
-        // does not auto-mirror).
-        matrix.postScale(-1f, 1f, viewW / 2f, viewH / 2f)
-    }
-    textureView.setTransform(matrix)
+    textureView.setTransform(Matrix())  // identity — CameraX handles rotation + front mirror
 }
