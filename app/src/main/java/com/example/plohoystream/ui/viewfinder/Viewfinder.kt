@@ -74,6 +74,15 @@ fun Viewfinder(viewModel: StreamViewModel) {
         (controller as? CameraXController)?.zoomRange ?: MutableStateFlow(1f..1f)
     }
     val zoomRange by zoomRangeFlow.collectAsStateWithLifecycle()
+    // Physical lenses (ultrawide/main/tele) + which one is bound, for the lens buttons.
+    val lensesFlow = remember(controller) {
+        (controller as? CameraXController)?.lenses ?: MutableStateFlow(emptyList())
+    }
+    val lenses by lensesFlow.collectAsStateWithLifecycle()
+    val selectedLensFlow = remember(controller) {
+        (controller as? CameraXController)?.selectedPhysicalId ?: MutableStateFlow<String?>(null)
+    }
+    val selectedPhysicalId by selectedLensFlow.collectAsStateWithLifecycle()
     var zoomVisible by remember { mutableStateOf(false) }
     var zoomNonce by remember { mutableStateOf(0) }
     LaunchedEffect(zoomNonce) {
@@ -87,6 +96,22 @@ fun Viewfinder(viewModel: StreamViewModel) {
         zoom = target.coerceIn(zoomRange.start, zoomRange.endInclusive)
         controller.setZoom(zoom)
         zoomNonce++
+    }
+
+    // Lens-switch transition: freeze + blur the current frame to mask the camera-reopen gap.
+    var previewTextureView by remember { mutableStateOf<android.view.TextureView?>(null) }
+    var frozenFrame by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var transitionVisible by remember { mutableStateOf(false) }
+    var transitionHoldMs by remember { mutableStateOf(750L) }
+    LaunchedEffect(transitionVisible, frozenFrame) {
+        if (transitionVisible) {
+            delay(transitionHoldMs)
+            transitionVisible = false
+        }
+    }
+    // holdMs: a front/back flip reopens a different camera (slower) than a same-camera lens switch.
+    fun beginLensTransition(holdMs: Long) {
+        previewTextureView?.bitmap?.let { frozenFrame = it; transitionHoldMs = holdMs; transitionVisible = true }
     }
 
     // Capability-driven quality menu for the ACTIVE camera (CameraX CameraInfo) intersected with
@@ -223,6 +248,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                         // The controller's preview surface is the source of truth for the preview.
                         (controller as? CameraXController)?.setPreviewSurface(it)
                     },
+                    onTextureView = { previewTextureView = it },
+                )
+                FreezeBlurOverlay(
+                    bitmap = frozenFrame,
+                    visible = transitionVisible,
+                    modifier = Modifier.matchParentSize(),
                 )
                 ZoomSlider(
                     zoom = zoom,
@@ -258,12 +289,21 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             health = ui.health,
                             bitrateKbps = ui.bitrateKbps,
                             audioLevel = ui.audioLevel,
-                            lenses = config?.lenses.orEmpty(),
-                            selectedZoom = zoom,
+                            lenses = lenses,
+                            selectedPhysicalId = selectedPhysicalId,
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
-                            onSelectLens = { lens -> zoom = lens.zoomRatio; controller.setLens(lens) },
-                            onFlip = { facing = CameraControls.opposite(facing); zoom = 1f },
+                            onSelectLens = { lens ->
+                                beginLensTransition(holdMs = 750L)                 // preview overlay
+                                (controller as? CameraXController)?.beginCameraTransition()  // stream
+                                zoom = 1f
+                                (controller as? CameraXController)?.selectLens(lens.physicalId)
+                            },
+                            onFlip = {
+                                beginLensTransition(holdMs = 1200L)
+                                (controller as? CameraXController)?.beginCameraTransition()
+                                facing = CameraControls.opposite(facing); zoom = 1f
+                            },
                             onGoLive = viewModel::goLive,
                             onStop = viewModel::stop,
                             onSettings = viewModel::openSettings,

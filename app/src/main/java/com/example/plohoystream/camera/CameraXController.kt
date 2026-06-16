@@ -6,6 +6,7 @@ import android.util.Size
 import android.view.Surface
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraEffect
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.SessionConfig
@@ -14,6 +15,7 @@ import androidx.camera.core.SurfaceRequest
 import androidx.camera.core.featuregroup.GroupableFeature
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
+import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.core.util.Consumer
@@ -70,6 +72,13 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
      *  so the zoom slider spans exactly what the device can do — no unreachable sub-1.0 region. */
     val zoomRange: StateFlow<ClosedFloatingPointRange<Float>> = _zoomRange.asStateFlow()
 
+    private val _lenses = MutableStateFlow<List<LensOption>>(emptyList())
+    /** Physical lenses of the active logical camera (ultrawide/main/tele), for the lens buttons. */
+    val lenses: StateFlow<List<LensOption>> = _lenses.asStateFlow()
+    private val _selectedPhysicalId = MutableStateFlow<String?>(null)
+    /** The currently-bound physical lens id (null = logical default / main). */
+    val selectedPhysicalId: StateFlow<String?> = _selectedPhysicalId.asStateFlow()
+
     private var camera: Camera? = null
 
     init {
@@ -97,8 +106,23 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         }
     }
 
+    /** Start a freeze-blur transition in the GL pipeline (covers preview AND the encoded stream). */
+    fun beginCameraTransition() = processor.beginTransition()
+
+    /** Switch to a physical lens (ultrawide/main/tele) by its Camera2 id; rebinds the session. */
+    fun selectLens(physicalId: String?) {
+        mainExecutor.execute {
+            if (_selectedPhysicalId.value == physicalId) return@execute
+            _selectedPhysicalId.value = physicalId
+            currentZoom = 1.0f   // start at the lens's native field of view
+            bindIfReady()
+        }
+    }
+
     override fun start(config: CameraConfig, targets: List<Surface>, hdr: Boolean) {
         mainExecutor.execute {
+            // A facing change has different physical lenses — drop the selected one.
+            if (lastConfig?.facing != config.facing) _selectedPhysicalId.value = null
             lastConfig = config
             lastTargets = targets
             lastHdr = hdr
@@ -157,10 +181,8 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             .apply { if (features.isNotEmpty()) setRequiredFeatureGroup(*features.toTypedArray()) }
             .build()
 
-        val selector = when (config.facing) {
-            Facing.FRONT -> CameraSelector.DEFAULT_FRONT_CAMERA
-            Facing.BACK -> CameraSelector.DEFAULT_BACK_CAMERA
-        }
+        enumerateLenses(config)
+        val selector = lensSelector(config.facing, _selectedPhysicalId.value)
 
         registry.currentState = Lifecycle.State.STARTED
         try {
@@ -211,6 +233,38 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             Log.i(TAG, "CameraX zoom range = ${zs.minZoomRatio}..${zs.maxZoomRatio}")
         }
     }
+
+    private fun lensSelector(facing: Facing, physicalId: String?): CameraSelector {
+        val facingInt =
+            if (facing == Facing.FRONT) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+        return CameraSelector.Builder()
+            .requireLensFacing(facingInt)
+            .apply { physicalId?.let { setPhysicalCameraId(it) } }
+            .build()
+    }
+
+    /**
+     * Enumerate the active logical camera's physical lenses (ultrawide/main/tele) for the lens
+     * buttons. Each one's [CameraInfo.getIntrinsicZoomRatio] gives its label (≈0.6×/1×/2×) and
+     * [Camera2CameraInfo] gives the id used to bind it. Published only when ≥2 are selectable.
+     */
+    private fun enumerateLenses(config: CameraConfig) {
+        val p = provider ?: return
+        val infos = runCatching {
+            p.getCameraInfo(lensSelector(config.facing, null)).physicalCameraInfos
+        }.getOrNull().orEmpty()
+        val lenses = infos.mapNotNull { info ->
+            val ratio = info.intrinsicZoomRatio
+            if (ratio == CameraInfo.INTRINSIC_ZOOM_RATIO_UNKNOWN || ratio <= 0f) return@mapNotNull null
+            val id = runCatching { Camera2CameraInfo.from(info).cameraId }.getOrNull() ?: return@mapNotNull null
+            LensOption(label = formatRatio(ratio), physicalId = id, zoomRatio = ratio)
+        }.distinctBy { it.physicalId }.sortedBy { it.zoomRatio }
+        _lenses.value = if (lenses.size >= 2) lenses else emptyList()
+    }
+
+    private fun formatRatio(r: Float): String =
+        if (r >= 1f && r == r.toInt().toFloat()) "${r.toInt()}×"
+        else String.format(java.util.Locale.US, "%.1f×", r)
 
     private fun buildPreview(config: CameraConfig): Preview {
         val size = Size(config.previewSize.width, config.previewSize.height)
