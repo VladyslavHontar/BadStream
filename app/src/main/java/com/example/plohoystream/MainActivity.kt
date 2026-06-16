@@ -35,7 +35,10 @@ class MainActivity : ComponentActivity() {
                 val vm: StreamViewModel = viewModel(factory = object : ViewModelProvider.Factory {
                     @Suppress("UNCHECKED_CAST")
                     override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                        StreamViewModel(LivePipeline.engine, LivePipeline.hdrAvailable, LivePipeline.store) as T
+                        StreamViewModel(
+                            LivePipeline.engine, LivePipeline.hdrAvailable, LivePipeline.store,
+                            obs = LivePipeline.obs,
+                        ) as T
                 })
                 StreamScreen(vm)
             }

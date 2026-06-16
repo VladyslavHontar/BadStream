@@ -1,5 +1,6 @@
 package com.example.plohoystream.stream.obs
 
+import android.util.Log
 import com.example.plohoystream.stream.Settings
 import com.example.plohoystream.stream.StreamState
 import kotlinx.coroutines.CoroutineScope
@@ -203,6 +204,9 @@ class ObsWebSocketController(
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             if (webSocket !== socket) return   // stale socket from a deliberate reconnect — ignore
+            // Surface the reason — otherwise a perpetual "Connecting…" (e.g. cleartext blocked,
+            // wrong host/port, firewall, bad password) is silent and undebuggable.
+            Log.w("ObsWebSocket", "OBS connection failed (will retry): ${t.message}", t)
             _connected.value = false
             scheduleReconnect()
         }
