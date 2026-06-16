@@ -178,6 +178,60 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         }
     }
 
+    /**
+     * Bind FRONT + BACK concurrently, both feeding the shared [processor]. Primary is [primaryFacing]
+     * at 1280x720; the other is the PiP source at 640x360 (distinguishable by resolution). Targets are
+     * the same preview/encoder surfaces as single mode. Calls [onFailed] if the device rejects the
+     * concurrent bind (caller reverts to single mode).
+     */
+    fun startDual(primaryFacing: Facing, targets: List<Surface>, onFailed: () -> Unit) {
+        mainExecutor.execute {
+            val provider = provider ?: run { onFailed(); return@execute }
+            lastTargets = targets
+            val encoder = targets.firstOrNull { it !== previewSurface }
+            processor.setEncoderSurface(encoder)
+            processor.setDualMode(true)
+            runCatching { provider.unbindAll() }
+            val secondaryFacing = if (primaryFacing == Facing.FRONT) Facing.BACK else Facing.FRONT
+            val primaryCfg = singleConfig(primaryFacing, Size(1280, 720), primary = true)
+            val secondaryCfg = singleConfig(secondaryFacing, Size(640, 360), primary = false)
+            registry.currentState = Lifecycle.State.STARTED
+            try {
+                provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
+                Log.i(TAG, "bound dual: primary=$primaryFacing")
+            } catch (e: Exception) {
+                Log.e(TAG, "concurrent bind failed; caller falls back to single", e)
+                processor.setDualMode(false)
+                onFailed()
+            }
+        }
+    }
+
+    private fun singleConfig(
+        facing: Facing,
+        size: Size,
+        primary: Boolean,
+    ): androidx.camera.core.ConcurrentCamera.SingleCameraConfig {
+        val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                androidx.camera.core.resolutionselector.ResolutionStrategy(
+                    size,
+                    androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
+                ),
+            ).build()
+        val preview = Preview.Builder().setResolutionSelector(resolutionSelector).build().apply {
+            if (primary) setSurfaceProvider(mainExecutor, UiSurfaceProvider())
+        }
+        val effect = EgressEffect(processor, mainExecutor)
+        val useCaseGroup = androidx.camera.core.UseCaseGroup.Builder()
+            .addUseCase(preview)
+            .addEffect(effect)
+            .build()
+        val selector = if (facing == Facing.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA
+                       else CameraSelector.DEFAULT_BACK_CAMERA
+        return androidx.camera.core.ConcurrentCamera.SingleCameraConfig(selector, useCaseGroup, this)
+    }
+
     private fun onProviderReady() {
         if (pendingStart) bindIfReady()
     }

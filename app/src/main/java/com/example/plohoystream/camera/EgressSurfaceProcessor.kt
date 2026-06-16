@@ -36,6 +36,10 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         const val METER_EVERY = 6   // sample luma every Nth frame (~5Hz at 30fps) for Auto-ISO
     }
 
+    @Volatile private var dualMode = false
+    /** Toggle dual-camera (PiP) compositing. Real two-input behavior lands in a later task. */
+    fun setDualMode(on: Boolean) { dualMode = on }
+
     /** When true, [onLuma] is invoked ~5Hz with the average frame luma (0..1) for Auto-ISO. */
     @Volatile var meteringEnabled = false
     var onLuma: ((Float) -> Unit)? = null
@@ -117,6 +121,7 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         }
         executeSafely({
             inputSurfaceCount++
+            Log.i(TAG, "onInputSurface #$inputSurfaceCount res=${request.resolution.width}x${request.resolution.height}")
             val surfaceTexture = SurfaceTexture(renderer.textureName)
             surfaceTexture.setDefaultBufferSize(
                 request.resolution.width,
