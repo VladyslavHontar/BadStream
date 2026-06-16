@@ -193,20 +193,68 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             processor.setEncoderSurface(encoder)
             processor.setDualMode(true)
             runCatching { provider.unbindAll() }
-            val secondaryFacing = if (primaryFacing == Facing.FRONT) Facing.BACK else Facing.FRONT
-            val primaryCfg = singleConfig(primaryFacing, Size(1280, 720), primary = true)
-            val secondaryCfg = singleConfig(secondaryFacing, Size(640, 360), primary = false)
-            registry.currentState = Lifecycle.State.STARTED
-            try {
-                provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
-                Log.i(TAG, "bound dual: primary=$primaryFacing")
-            } catch (e: Exception) {
-                Log.e(TAG, "concurrent bind failed; caller falls back to single", e)
-                processor.setDualMode(false)
-                onFailed()
+            // unbindAll() closes the prior session's camera ASYNCHRONOUSLY. Opening the concurrent
+            // pair before that close finishes throws ERROR_CAMERA_LIMIT_EXCEEDED (the front camera
+            // never opens → frozen feed on a re-toggle). Gate the bind on both cameras being free.
+            awaitCamerasFreeThenBind {
+                val secondaryFacing = if (primaryFacing == Facing.FRONT) Facing.BACK else Facing.FRONT
+                val primaryCfg = singleConfig(primaryFacing, Size(1280, 720), primary = true)
+                val secondaryCfg = singleConfig(secondaryFacing, Size(640, 360), primary = false)
+                registry.currentState = Lifecycle.State.STARTED
+                try {
+                    provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
+                    Log.i(TAG, "bound dual: primary=$primaryFacing")
+                } catch (e: Exception) {
+                    Log.e(TAG, "concurrent bind failed; caller falls back to single", e)
+                    processor.setDualMode(false)
+                    onFailed()
+                }
             }
         }
     }
+
+    /**
+     * Run [bind] (on the main thread) once the default front AND back cameras are both reported
+     * available by [android.hardware.camera2.CameraManager] — i.e. the prior session's camera has
+     * finished its async close — or after a 2s safety timeout. Prevents the
+     * ERROR_CAMERA_LIMIT_EXCEEDED that wedges a concurrent re-bind issued too soon after unbindAll().
+     */
+    private fun awaitCamerasFreeThenBind(bind: () -> Unit) {
+        val mgr = runCatching {
+            appContext.getSystemService(android.content.Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+        }.getOrNull()
+        val backId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_BACK) }
+        val frontId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_FRONT) }
+        if (mgr == null || backId == null || frontId == null) { bind(); return }
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val available = HashSet<String>()
+        var done = false
+        lateinit var cb: android.hardware.camera2.CameraManager.AvailabilityCallback
+        fun finish() {
+            if (done) return
+            done = true
+            handler.removeCallbacksAndMessages(null)
+            runCatching { mgr.unregisterAvailabilityCallback(cb) }
+            bind()
+        }
+        cb = object : android.hardware.camera2.CameraManager.AvailabilityCallback() {
+            override fun onCameraAvailable(cameraId: String) {
+                available.add(cameraId)
+                if (available.contains(backId) && available.contains(frontId)) finish()
+            }
+            override fun onCameraUnavailable(cameraId: String) { available.remove(cameraId) }
+        }
+        // registerAvailabilityCallback immediately reports cameras that are already free.
+        mgr.registerAvailabilityCallback(cb, handler)
+        handler.postDelayed({ finish() }, 2000L)   // safety: bind anyway if availability never settles
+    }
+
+    private fun defaultCameraId(mgr: android.hardware.camera2.CameraManager, lensFacing: Int): String? =
+        runCatching {
+            mgr.cameraIdList.firstOrNull { id ->
+                mgr.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == lensFacing
+            }
+        }.getOrNull()
 
     private fun singleConfig(
         facing: Facing,
