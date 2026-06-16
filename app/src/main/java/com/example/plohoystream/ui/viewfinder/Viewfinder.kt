@@ -129,6 +129,26 @@ fun Viewfinder(viewModel: StreamViewModel) {
             .onFailure { android.util.Log.w("Viewfinder", "menu generation failed", it) }
     }
 
+    // One-shot capability probe: can this device run FRONT + BACK concurrently? Logged so we can
+    // confirm dual-camera feasibility on real hardware before enabling the mode. Held locally
+    // (like facing/zoom); a later plan surfaces it as a toggle.
+    var dualSupported by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val provider = androidx.camera.lifecycle.ProcessCameraProvider.getInstance(context).get()
+                val combos = com.example.plohoystream.camera.ConcurrentCameraProbe.facingCombos(provider)
+                combos to com.example.plohoystream.camera.ConcurrentCameraProbe.supportsFrontBack(combos)
+            }
+        }.onSuccess { (combos, supported) ->
+            dualSupported = supported
+            android.util.Log.i(
+                "Viewfinder",
+                "concurrent-camera probe: frontBackSupported=$supported combos=$combos",
+            )
+        }.onFailure { android.util.Log.w("Viewfinder", "concurrent-camera probe failed", it) }
+    }
+
     val config = remember(cameras, facing, ui.settings.quality.fps) {
         CameraCapabilities.select(cameras, facing, ui.settings.quality.fps)
     }
