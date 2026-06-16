@@ -331,6 +331,10 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             onGoLive = viewModel::goLive,
                             onStop = viewModel::stop,
                             onSettings = viewModel::openSettings,
+                            showObsScenes = ui.obsSceneSwitcherVisible,
+                            obsScenes = ui.obsScenes,
+                            obsCurrentScene = ui.obsCurrentScene,
+                            onSwitchScene = viewModel::obsSwitchScene,
                             modifier = Modifier.fillMaxSize().padding(12.dp),
                         )
                     }
