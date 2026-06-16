@@ -36,9 +36,21 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         const val METER_EVERY = 6   // sample luma every Nth frame (~5Hz at 30fps) for Auto-ISO
     }
 
+    // Dual-camera (PiP) state. The secondary SurfaceTexture is bound to the renderer's 2nd texture;
+    // the primary drives the composite using the secondary's latest frame. Layout is fixed here
+    // (default); a later plan makes it adjustable.
     @Volatile private var dualMode = false
-    /** Toggle dual-camera (PiP) compositing. Real two-input behavior lands in a later task. */
-    fun setDualMode(on: Boolean) { dualMode = on }
+    private var primaryTexture: SurfaceTexture? = null
+    private var secondaryTexture: SurfaceTexture? = null
+    private val secondaryTransform = FloatArray(16)
+    @Volatile private var pipLayout = com.example.plohoystream.camera.PipLayout()
+
+    fun setDualMode(on: Boolean) {
+        executeSafely({
+            dualMode = on
+            if (!on) { primaryTexture = null; secondaryTexture = null }
+        })
+    }
 
     /** When true, [onLuma] is invoked ~5Hz with the average frame luma (0..1) for Auto-ISO. */
     @Volatile var meteringEnabled = false
@@ -121,17 +133,24 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         }
         executeSafely({
             inputSurfaceCount++
-            Log.i(TAG, "onInputSurface #$inputSurfaceCount res=${request.resolution.width}x${request.resolution.height}")
-            val surfaceTexture = SurfaceTexture(renderer.textureName)
+            Log.i(TAG, "onInputSurface #$inputSurfaceCount res=${request.resolution.width}x${request.resolution.height} dual=$dualMode")
+            val isSecondary = dualMode && secondaryTexture == null && primaryTexture != null
+            val texName = if (isSecondary) renderer.textureName2 else renderer.textureName
+            val surfaceTexture = SurfaceTexture(texName)
             surfaceTexture.setDefaultBufferSize(
                 request.resolution.width,
                 request.resolution.height,
             )
+            if (dualMode) {
+                if (isSecondary) secondaryTexture = surfaceTexture else primaryTexture = surfaceTexture
+            }
             val surface = Surface(surfaceTexture)
             request.provideSurface(surface, glExecutor) {
                 surfaceTexture.setOnFrameAvailableListener(null)
                 surfaceTexture.release()
                 surface.release()
+                if (surfaceTexture === primaryTexture) primaryTexture = null
+                if (surfaceTexture === secondaryTexture) secondaryTexture = null
                 inputSurfaceCount--
                 checkReadyToRelease()
             }
@@ -210,6 +229,11 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             Log.w(TAG, "Skipping frame: updateTexImage failed (camera producer torn down?)", e)
             return
         }
+        // Secondary (PiP) camera: only refresh its texture; the primary frame drives the composite.
+        if (dualMode && surfaceTexture === secondaryTexture) {
+            System.arraycopy(textureTransform, 0, secondaryTransform, 0, 16)
+            return
+        }
         val timestampNs = surfaceTexture.timestamp
         lastFrameTimestampNs = timestampNs
         if (transitionActive) {
@@ -218,6 +242,25 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             if (System.nanoTime() - transitionStartNs < 250_000_000L) return
             transitionActive = false
             Log.d(TAG, "transition ended; rendering live (outputs=${outputSurfaces.size}, encoder=${encoderSurface != null})")
+        }
+
+        if (dualMode && primaryTexture != null && secondaryTexture != null) {
+            val r = com.example.plohoystream.camera.PipLayout.pipRect(pipLayout)
+            for ((output, surface) in outputSurfaces) {
+                output.updateTransformMatrix(surfaceOutputTransform, textureTransform)
+                System.arraycopy(surfaceOutputTransform, 0, encoderTransform, 0, 16)
+                hasEncoderTransform = true
+                try {
+                    renderer.renderComposite(timestampNs, surfaceOutputTransform, secondaryTransform, r.left, r.top, r.right, r.bottom, surface)
+                } catch (e: RuntimeException) { Log.e(TAG, "composite preview render failed", e) }
+            }
+            encoderSurface?.let { surface ->
+                val transform = if (hasEncoderTransform) encoderTransform else textureTransform
+                try {
+                    renderer.renderComposite(timestampNs, transform, secondaryTransform, r.left, r.top, r.right, r.bottom, surface)
+                } catch (e: RuntimeException) { Log.e(TAG, "composite encoder render failed", e) }
+            }
+            return
         }
 
         // Render to each CameraX preview output (transform adjusted by the SurfaceOutput). Cache
