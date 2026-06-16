@@ -399,7 +399,7 @@ class GlRenderer {
         Matrix.rotateM(secRot, 0, -90f, 0f, 0f, 1f)
         Matrix.translateM(secRot, 0, -0.5f, -0.5f, 0f)
         val secTex = FloatArray(16)
-        Matrix.multiplyMM(secTex, 0, secondaryTransform, 0, secRot, 0)
+        Matrix.multiplyMM(secTex, 0, secRot, 0, secondaryTransform, 0)
         GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, secTex, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
