@@ -294,12 +294,14 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
                             onSelectLens = { lens ->
-                                beginLensTransition(holdMs = 750L)
+                                beginLensTransition(holdMs = 750L)                 // preview overlay
+                                (controller as? CameraXController)?.beginCameraTransition()  // stream
                                 zoom = 1f
                                 (controller as? CameraXController)?.selectLens(lens.physicalId)
                             },
                             onFlip = {
                                 beginLensTransition(holdMs = 1200L)
+                                (controller as? CameraXController)?.beginCameraTransition()
                                 facing = CameraControls.opposite(facing); zoom = 1f
                             },
                             onGoLive = viewModel::goLive,

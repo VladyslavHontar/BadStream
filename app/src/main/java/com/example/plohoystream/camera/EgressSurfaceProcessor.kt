@@ -53,6 +53,18 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     private val encoderTransform = FloatArray(16)
     private var hasEncoderTransform = false
 
+    // Freeze-blur transition (lens/camera switch): while active, push the captured frozen frame to
+    // all outputs (preview + encoder, so it's in the stream too) until the new camera's first frame
+    // arrives. Ended frame-based in onFrameAvailable, with a safety timeout.
+    @Volatile private var transitionActive = false
+    private val transitionTick = object : Runnable {
+        override fun run() {
+            if (!transitionActive || isReleased) return
+            renderFrozenToAll()
+            glHandler.postDelayed(this, 33L)
+        }
+    }
+
     /** Encoder (MediaCodec input) surface, registered/unregistered via [setEncoderSurface]. */
     private var encoderSurface: Surface? = null
 
@@ -131,11 +143,40 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         }, output::close)
     }
 
+    /**
+     * Begin a freeze-blur transition: capture the current frame and keep pushing it (blurred) to all
+     * outputs — preview AND the encoder, so it's in the stream — until the new camera's first frame
+     * arrives. Call right before a lens switch / camera flip. Safe to call from any thread.
+     */
+    fun beginTransition() {
+        if (isReleaseRequested.get()) return
+        executeSafely({
+            if (!hasEncoderTransform) return@executeSafely   // no frame seen yet; nothing to freeze
+            runCatching { renderer.captureFrozen(encoderTransform) }
+                .onFailure { Log.e(TAG, "captureFrozen failed", it); return@executeSafely }
+            if (!transitionActive) {
+                transitionActive = true
+                glHandler.post(transitionTick)
+                glHandler.postDelayed({ transitionActive = false }, 2000L)   // safety stop
+            }
+        })
+    }
+
+    private fun renderFrozenToAll() {
+        val ts = System.nanoTime()
+        for ((_, surface) in outputSurfaces) {
+            runCatching { renderer.renderFrozen(ts, surface) }
+        }
+        encoderSurface?.let { runCatching { renderer.renderFrozen(ts, it) } }
+    }
+
     private fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
         if (isReleaseRequested.get()) return
         surfaceTexture.updateTexImage()
         surfaceTexture.getTransformMatrix(textureTransform)
         val timestampNs = surfaceTexture.timestamp
+        // The new camera's first frame ends the transition (frame-based — lasts exactly the gap).
+        transitionActive = false
 
         // Render to each CameraX preview output (transform adjusted by the SurfaceOutput). Cache
         // that orientation-corrected transform so the encoder matches the preview orientation.

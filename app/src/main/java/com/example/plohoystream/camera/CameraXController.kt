@@ -106,6 +106,9 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         }
     }
 
+    /** Start a freeze-blur transition in the GL pipeline (covers preview AND the encoded stream). */
+    fun beginCameraTransition() = processor.beginTransition()
+
     /** Switch to a physical lens (ultrawide/main/tele) by its Camera2 id; rebinds the session. */
     fun selectLens(physicalId: String?) {
         mainExecutor.execute {

@@ -79,6 +79,32 @@ class GlRenderer {
             }
             """.trimIndent()
 
+        // Freeze-blur (lens/camera switch transition): a plain 2D-sampler program. The blur is
+        // achieved by capturing the live frame into a tiny FBO texture and bilinear-upscaling it.
+        val BLUR_VERTEX_SHADER =
+            """
+            attribute vec4 aPosition;
+            attribute vec4 aTextureCoord;
+            varying vec2 vBlurCoord;
+            void main() {
+                gl_Position = aPosition;
+                vBlurCoord = aTextureCoord.xy;
+            }
+            """.trimIndent()
+
+        val BLUR_FRAGMENT_SHADER =
+            """
+            precision mediump float;
+            uniform sampler2D sBlurTexture;
+            varying vec2 vBlurCoord;
+            void main() { gl_FragColor = texture2D(sBlurTexture, vBlurCoord); }
+            """.trimIndent()
+
+        // Capture resolution for the frozen frame — small enough that the bilinear upscale to the
+        // output is a strong, smooth blur.
+        const val FROZEN_W = 96
+        const val FROZEN_H = 54
+
         const val SIZEOF_FLOAT = 4
         const val PIXEL_STRIDE = 4
 
@@ -156,6 +182,14 @@ class GlRenderer {
 
     private var externalTextureId = -1
 
+    // Freeze-blur resources.
+    private var blurProgramHandle = -1
+    private var blurPositionLoc = -1
+    private var blurTexCoordLoc = -1
+    private var blurSamplerLoc = -1
+    private var frozenFbo = -1
+    private var frozenTexId = -1
+
     /** External OES texture id the camera renders into. Valid after [init]. */
     val textureName: Int
         get() {
@@ -175,6 +209,8 @@ class GlRenderer {
             useProgram()
             externalTextureId = createExternalTexture()
             activateExternalTexture(externalTextureId)
+            createBlurProgram()
+            createFrozenFbo()
         } catch (e: RuntimeException) {
             releaseInternal()
             throw e
@@ -243,6 +279,50 @@ class GlRenderer {
             )
             removeOutputSurfaceInternal(surface, false)
         }
+    }
+
+    /**
+     * Freezes the current camera frame into the small FBO texture (downscaled), applying
+     * [textureTransform] so it's oriented like the live preview. Call once when a switch begins.
+     */
+    fun captureFrozen(textureTransform: FloatArray) {
+        checkInitialized()
+        checkGlThread()
+        bindMainProgram()
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frozenFbo)
+        GLES20.glViewport(0, 0, FROZEN_W, FROZEN_H)
+        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
+        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, textureTransform, 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        currentSurface = null // force viewport reset on the next live render()
+    }
+
+    /**
+     * Renders the frozen (blurred-by-upscale) frame to [surface]. Used by the transition loop while
+     * the new camera reopens, so both preview and the encoder keep getting frames. Restores the main
+     * program afterward so the next live [render] is unaffected.
+     */
+    fun renderFrozen(timestampNs: Long, surface: Surface) {
+        checkInitialized()
+        checkGlThread()
+        var outputSurface = getOutSurfaceOrThrow(surface)
+        if (outputSurface === NO_OUTPUT_SURFACE) {
+            val created = createOutputSurfaceInternal(surface) ?: return
+            outputSurfaceMap[surface] = created
+            outputSurface = created
+        }
+        makeCurrent(outputSurface.eglSurface)
+        currentSurface = surface
+        GLES20.glViewport(0, 0, outputSurface.width, outputSurface.height)
+        bindBlurProgram()
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        EGLExt.eglPresentationTimeANDROID(eglDisplay, outputSurface.eglSurface, timestampNs)
+        if (!EGL14.eglSwapBuffers(eglDisplay, outputSurface.eglSurface)) {
+            removeOutputSurfaceInternal(surface, false)
+        }
+        bindMainProgram()     // restore external-texture program for live render()
+        currentSurface = null // force viewport reset on the next live render()
     }
 
     /** Releases all GL/EGL resources. Must run on the GL thread. */
@@ -442,6 +522,69 @@ class GlRenderer {
         checkGlErrorOrThrow("glBindTexture")
     }
 
+    private fun createBlurProgram() {
+        val vs = loadShader(GLES20.GL_VERTEX_SHADER, BLUR_VERTEX_SHADER)
+        val fs = loadShader(GLES20.GL_FRAGMENT_SHADER, BLUR_FRAGMENT_SHADER)
+        val program = GLES20.glCreateProgram()
+        GLES20.glAttachShader(program, vs)
+        GLES20.glAttachShader(program, fs)
+        GLES20.glLinkProgram(program)
+        val status = IntArray(1)
+        GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, status, 0)
+        check(status[0] == GLES20.GL_TRUE) { "blur program link failed: ${GLES20.glGetProgramInfoLog(program)}" }
+        blurProgramHandle = program
+        blurPositionLoc = GLES20.glGetAttribLocation(program, "aPosition")
+        blurTexCoordLoc = GLES20.glGetAttribLocation(program, "aTextureCoord")
+        blurSamplerLoc = GLES20.glGetUniformLocation(program, "sBlurTexture")
+    }
+
+    private fun createFrozenFbo() {
+        val tex = IntArray(1)
+        GLES20.glGenTextures(1, tex, 0)
+        frozenTexId = tex[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frozenTexId)
+        GLES20.glTexImage2D(
+            GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, FROZEN_W, FROZEN_H, 0,
+            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null,
+        )
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        val fbo = IntArray(1)
+        GLES20.glGenFramebuffers(1, fbo, 0)
+        frozenFbo = fbo[0]
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frozenFbo)
+        GLES20.glFramebufferTexture2D(
+            GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, frozenTexId, 0,
+        )
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        checkGlErrorOrThrow("createFrozenFbo")
+    }
+
+    /** Restore the external-texture program + its vertex attribs + texture (after a frozen render). */
+    private fun bindMainProgram() {
+        GLES20.glUseProgram(programHandle)
+        GLES20.glEnableVertexAttribArray(positionLoc)
+        GLES20.glVertexAttribPointer(positionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
+        GLES20.glEnableVertexAttribArray(texCoordLoc)
+        GLES20.glVertexAttribPointer(texCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texBuf)
+        GLES20.glUniform1f(alphaScaleLoc, 1.0f)
+        GLES20.glUniform1i(samplerLoc, 0)
+        activateExternalTexture(externalTextureId)
+    }
+
+    private fun bindBlurProgram() {
+        GLES20.glUseProgram(blurProgramHandle)
+        GLES20.glEnableVertexAttribArray(blurPositionLoc)
+        GLES20.glVertexAttribPointer(blurPositionLoc, 2, GLES20.GL_FLOAT, false, 0, vertexBuf)
+        GLES20.glEnableVertexAttribArray(blurTexCoordLoc)
+        GLES20.glVertexAttribPointer(blurTexCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texBuf)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frozenTexId)
+        GLES20.glUniform1i(blurSamplerLoc, 0)
+    }
+
     // endregion
 
     // region Output surface management
@@ -501,6 +644,18 @@ class GlRenderer {
         if (programHandle != -1) {
             GLES20.glDeleteProgram(programHandle)
             programHandle = -1
+        }
+        if (blurProgramHandle != -1) {
+            GLES20.glDeleteProgram(blurProgramHandle)
+            blurProgramHandle = -1
+        }
+        if (frozenFbo != -1) {
+            GLES20.glDeleteFramebuffers(1, intArrayOf(frozenFbo), 0)
+            frozenFbo = -1
+        }
+        if (frozenTexId != -1) {
+            GLES20.glDeleteTextures(1, intArrayOf(frozenTexId), 0)
+            frozenTexId = -1
         }
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(
