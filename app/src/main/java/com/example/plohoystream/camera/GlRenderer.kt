@@ -92,18 +92,29 @@ class GlRenderer {
             }
             """.trimIndent()
 
+        // 5-sample (9-tap, via linear) separable gaussian. uTexelOffset is the 1-tap step in the
+        // blur direction (0 = passthrough, used for the final upscale). Weights sum to 1.
         val BLUR_FRAGMENT_SHADER =
             """
             precision mediump float;
             uniform sampler2D sBlurTexture;
+            uniform vec2 uTexelOffset;
             varying vec2 vBlurCoord;
-            void main() { gl_FragColor = texture2D(sBlurTexture, vBlurCoord); }
+            void main() {
+                vec4 sum = texture2D(sBlurTexture, vBlurCoord) * 0.2270270270;
+                sum += texture2D(sBlurTexture, vBlurCoord + uTexelOffset * 1.3846153846) * 0.3162162162;
+                sum += texture2D(sBlurTexture, vBlurCoord - uTexelOffset * 1.3846153846) * 0.3162162162;
+                sum += texture2D(sBlurTexture, vBlurCoord + uTexelOffset * 3.2307692308) * 0.0702702703;
+                sum += texture2D(sBlurTexture, vBlurCoord - uTexelOffset * 3.2307692308) * 0.0702702703;
+                gl_FragColor = sum;
+            }
             """.trimIndent()
 
-        // Capture resolution for the frozen frame — small enough that the bilinear upscale to the
-        // output is a strong, smooth blur.
-        const val FROZEN_W = 96
-        const val FROZEN_H = 54
+        // Capture resolution for the frozen frame. Moderate (not tiny) so the gaussian — not raw
+        // downscale aliasing — produces the blur. BLUR_SCALE widens the gaussian for a heavier look.
+        const val FROZEN_W = 200
+        const val FROZEN_H = 112
+        const val BLUR_SCALE = 2.0f
 
         const val SIZEOF_FLOAT = 4
         const val PIXEL_STRIDE = 4
@@ -187,8 +198,11 @@ class GlRenderer {
     private var blurPositionLoc = -1
     private var blurTexCoordLoc = -1
     private var blurSamplerLoc = -1
+    private var blurOffsetLoc = -1
     private var frozenFbo = -1
     private var frozenTexId = -1
+    private var pingFbo = -1      // intermediate for the separable gaussian
+    private var pingTexId = -1
 
     /** External OES texture id the camera renders into. Valid after [init]. */
     val textureName: Int
@@ -288,13 +302,19 @@ class GlRenderer {
     fun captureFrozen(textureTransform: FloatArray) {
         checkInitialized()
         checkGlThread()
+        // 1) Downscale the live frame into the frozen FBO (external-texture program).
         bindMainProgram()
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frozenFbo)
         GLES20.glViewport(0, 0, FROZEN_W, FROZEN_H)
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
         GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, textureTransform, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        // 2) Separable gaussian: frozen --H--> ping --V--> frozen.
+        bindBlurProgram()
+        blurPass(frozenTexId, pingFbo, BLUR_SCALE / FROZEN_W, 0f)
+        blurPass(pingTexId, frozenFbo, 0f, BLUR_SCALE / FROZEN_H)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        bindMainProgram()
         currentSurface = null // force viewport reset on the next live render()
     }
 
@@ -536,13 +556,13 @@ class GlRenderer {
         blurPositionLoc = GLES20.glGetAttribLocation(program, "aPosition")
         blurTexCoordLoc = GLES20.glGetAttribLocation(program, "aTextureCoord")
         blurSamplerLoc = GLES20.glGetUniformLocation(program, "sBlurTexture")
+        blurOffsetLoc = GLES20.glGetUniformLocation(program, "uTexelOffset")
     }
 
-    private fun createFrozenFbo() {
+    private fun newFboTexture(): Pair<Int, Int> {
         val tex = IntArray(1)
         GLES20.glGenTextures(1, tex, 0)
-        frozenTexId = tex[0]
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frozenTexId)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0])
         GLES20.glTexImage2D(
             GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, FROZEN_W, FROZEN_H, 0,
             GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null,
@@ -553,13 +573,28 @@ class GlRenderer {
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         val fbo = IntArray(1)
         GLES20.glGenFramebuffers(1, fbo, 0)
-        frozenFbo = fbo[0]
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, frozenFbo)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fbo[0])
         GLES20.glFramebufferTexture2D(
-            GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, frozenTexId, 0,
+            GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, tex[0], 0,
         )
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        return fbo[0] to tex[0]
+    }
+
+    private fun createFrozenFbo() {
+        val (ffbo, ftex) = newFboTexture(); frozenFbo = ffbo; frozenTexId = ftex
+        val (pfbo, ptex) = newFboTexture(); pingFbo = pfbo; pingTexId = ptex
         checkGlErrorOrThrow("createFrozenFbo")
+    }
+
+    /** One separable-gaussian pass: blur [srcTexId] into [dstFbo] with the given texel offset. */
+    private fun blurPass(srcTexId: Int, dstFbo: Int, offX: Float, offY: Float) {
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, dstFbo)
+        GLES20.glViewport(0, 0, FROZEN_W, FROZEN_H)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, srcTexId)
+        GLES20.glUniform2f(blurOffsetLoc, offX, offY)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     /** Restore the external-texture program + its vertex attribs + texture (after a frozen render). */
@@ -583,6 +618,7 @@ class GlRenderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frozenTexId)
         GLES20.glUniform1i(blurSamplerLoc, 0)
+        GLES20.glUniform2f(blurOffsetLoc, 0f, 0f)   // default: passthrough (final upscale)
     }
 
     // endregion
@@ -656,6 +692,14 @@ class GlRenderer {
         if (frozenTexId != -1) {
             GLES20.glDeleteTextures(1, intArrayOf(frozenTexId), 0)
             frozenTexId = -1
+        }
+        if (pingFbo != -1) {
+            GLES20.glDeleteFramebuffers(1, intArrayOf(pingFbo), 0)
+            pingFbo = -1
+        }
+        if (pingTexId != -1) {
+            GLES20.glDeleteTextures(1, intArrayOf(pingTexId), 0)
+            pingTexId = -1
         }
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(
