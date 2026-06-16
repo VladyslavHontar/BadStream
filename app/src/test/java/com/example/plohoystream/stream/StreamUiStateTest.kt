@@ -44,4 +44,11 @@ class StreamUiStateTest {
         assertTrue(s.isActive)
         assertFalse(s.canGoLive)
     }
+
+    @Test fun obsSceneSwitcherVisible_requiresConnectedAndNonEmptyScenes() {
+        assertFalse(StreamUiState().obsSceneSwitcherVisible)                                  // default: not connected
+        assertFalse(StreamUiState(obsConnected = true).obsSceneSwitcherVisible)               // connected, no scenes
+        assertFalse(StreamUiState(obsScenes = listOf("Main")).obsSceneSwitcherVisible)        // scenes, not connected
+        assertTrue(StreamUiState(obsConnected = true, obsScenes = listOf("Main")).obsSceneSwitcherVisible)
+    }
 }

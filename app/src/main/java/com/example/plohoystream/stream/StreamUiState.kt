@@ -38,4 +38,11 @@ data class StreamUiState(
 
     /** The signature preview-shrink is driven by this. */
     val settingsOpen: Boolean get() = panelOpen
+
+    /**
+     * The viewfinder scene switcher shows only when the OBS WebSocket is connected and OBS has
+     * reported at least one scene. Connecting still lives in Settings → OBS Remote.
+     */
+    val obsSceneSwitcherVisible: Boolean
+        get() = obsConnected && obsScenes.isNotEmpty()
 }
