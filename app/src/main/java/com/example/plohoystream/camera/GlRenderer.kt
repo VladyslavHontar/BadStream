@@ -370,7 +370,17 @@ class GlRenderer {
         Matrix.scaleM(pipMatrix, 0, sx, sy, 1f)
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, pipMatrix, 0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId2)
-        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, secondaryTransform, 0)
+        // The secondary (PiP) camera bypasses CameraX's orientation handling (it feeds this texture
+        // directly), so upright the front camera by rotating the IMAGE 90° CCW. Texture-coord rotation
+        // is the inverse of image rotation, so rotate the tex coords -90° about the texture centre.
+        val secRot = FloatArray(16)
+        Matrix.setIdentityM(secRot, 0)
+        Matrix.translateM(secRot, 0, 0.5f, 0.5f, 0f)
+        Matrix.rotateM(secRot, 0, -90f, 0f, 0f, 1f)
+        Matrix.translateM(secRot, 0, -0.5f, -0.5f, 0f)
+        val secTex = FloatArray(16)
+        Matrix.multiplyMM(secTex, 0, secondaryTransform, 0, secRot, 0)
+        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, secTex, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
         // Restore defaults for the next single-camera render()/frozen path.

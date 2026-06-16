@@ -229,7 +229,14 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         }
         val useCaseGroup = androidx.camera.core.UseCaseGroup.Builder()
             .addUseCase(preview)
-            .apply { if (primary) addEffect(EgressEffect(processor, mainExecutor)) }
+            .apply {
+                if (primary) {
+                    addEffect(EgressEffect(processor, mainExecutor))
+                    // Concurrent mode hands the primary a 4:3 buffer; crop it to the 16:9 output so it
+                    // isn't stretched (vertically squeezed) when drawn full-frame.
+                    setViewPort(androidx.camera.core.ViewPort.Builder(android.util.Rational(16, 9), Surface.ROTATION_0).build())
+                }
+            }
             .build()
         val selector = if (facing == Facing.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA
                        else CameraSelector.DEFAULT_BACK_CAMERA
