@@ -40,11 +40,22 @@ class VideoEncoder(
     @Volatile private var firstFrameSeen: Boolean = false
 
     init {
+        // Gradual intra-refresh is the cure for the multi-colour blocky corruption on a constrained
+        // uplink: a long GOP means lost reference data shows as decode garbage until the next IDR,
+        // and at low bitrate the periodic keyframe is a budget spike that itself causes the loss.
+        // Intra-refresh spreads the I-data across frames so corruption heals continuously with no
+        // spike. Best-effort — only set when the encoder advertises the feature, else fall back to
+        // the (now shorter) GOP. See also: SRTLA bonding for the real fix to the lossy link.
+        val intraRefreshSupported = runCatching {
+            codec.codecInfo.getCapabilitiesForType(mime)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_IntraRefresh)
+        }.getOrDefault(false)
         val mediaFormat = MediaFormat.createVideoFormat(mime, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            if (intraRefreshSupported) setInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD, fps)
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
             if (format.codec == VideoCodecType.HEVC) {
                 setInteger(MediaFormat.KEY_PROFILE,
