@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -191,6 +192,11 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     // CameraX's real range and reveals the slider.
                     .pointerInput(zoomRange) {
                         detectTransformGestures { _, _, zoomChange, _ -> applyZoom(zoom * zoomChange) }
+                    }
+                    // Single tap reveals the zoom slider for a few seconds (bumping the nonce
+                    // restarts the auto-hide timer) without changing zoom.
+                    .pointerInput(Unit) {
+                        detectTapGestures { zoomNonce++ }
                     },
             ) {
                 CameraPreview(
