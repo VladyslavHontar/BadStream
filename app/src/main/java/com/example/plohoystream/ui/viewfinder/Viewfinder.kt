@@ -92,6 +92,7 @@ fun Viewfinder(viewModel: StreamViewModel) {
     }
     val exposure by exposureFlow.collectAsStateWithLifecycle()
     var exposureOpen by remember { mutableStateOf(false) }
+    var dualOn by remember { mutableStateOf(false) }
     val selectedPhysicalId by selectedLensFlow.collectAsStateWithLifecycle()
     var zoomVisible by remember { mutableStateOf(false) }
     var zoomNonce by remember { mutableStateOf(0) }
@@ -355,6 +356,24 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             obsScenes = ui.obsScenes,
                             obsCurrentScene = ui.obsCurrentScene,
                             onSwitchScene = viewModel::obsSwitchScene,
+                            dualSupported = dualSupported,
+                            dualOn = dualOn,
+                            onToggleDual = {
+                                val c = controller as? CameraXController
+                                if (c != null) {
+                                    if (dualOn) {
+                                        dualOn = false
+                                        config?.let { c.start(it, listOfNotNull(surface, encoderSurface), hdr = activeHdr) }
+                                    } else {
+                                        dualOn = true
+                                        c.startDual(
+                                            primaryFacing = facing,
+                                            targets = listOfNotNull(surface, encoderSurface),
+                                            onFailed = { dualOn = false },
+                                        )
+                                    }
+                                }
+                            },
                             modifier = Modifier.fillMaxSize().padding(12.dp),
                         )
                     }

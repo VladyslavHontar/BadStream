@@ -17,6 +17,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -55,6 +56,9 @@ fun ControlRail(
     obsScenes: List<String>,
     obsCurrentScene: String?,
     onSwitchScene: (String) -> Unit,
+    dualSupported: Boolean = false,
+    dualOn: Boolean = false,
+    onToggleDual: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val reconnecting = state is StreamState.Reconnecting
@@ -88,6 +92,15 @@ fun ControlRail(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             IconButton(onClick = onFlip, modifier = Modifier.size(40.dp).clip(CircleShape)) {
                 Icon(Icons.Filled.Cameraswitch, contentDescription = "Flip camera", tint = OnSurfaceWhite)
+            }
+            if (dualSupported) {
+                IconButton(onClick = onToggleDual, modifier = Modifier.size(40.dp).clip(CircleShape)) {
+                    Icon(
+                        Icons.Filled.PictureInPictureAlt,
+                        contentDescription = if (dualOn) "Disable dual camera" else "Enable dual camera",
+                        tint = if (dualOn) OnSurfaceWhite else OnSurfaceMuted,
+                    )
+                }
             }
             GoLiveButton(state = state, enabled = canGoLive, onGoLive = onGoLive, onStop = onStop)
             IconButton(onClick = onSettings, modifier = Modifier.size(40.dp).clip(CircleShape)) {
