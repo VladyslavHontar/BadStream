@@ -67,6 +67,26 @@ SrtLink::~SrtLink() {
     }
 }
 
+// SRT reject reasons that are permanent — wrong passphrase, version/compat mismatch, malformed
+// handshake. Anything else (timeout, listener resource/backlog exhaustion, system errors, a peer
+// transiently refusing) is treated as a recoverable drop so the engine keeps reconnecting. The
+// common IRL case: on a brief drop the OBS/relay listener still holds the previous peer for a few
+// seconds, so the reconnect handshake returns SRT_REJ_TIMEOUT until it frees up — that MUST retry.
+static bool IsPermanentRejectReason(int reason) {
+    switch (reason) {
+        case SRT_REJ_BADSECRET:   // wrong passphrase
+        case SRT_REJ_UNSECURE:    // passphrase required but not supplied (or vice versa)
+        case SRT_REJ_VERSION:     // incompatible SRT version
+        case SRT_REJ_MESSAGEAPI:  // live/file/message API mismatch
+        case SRT_REJ_ROGUE:       // malformed handshake
+        case SRT_REJ_FILTER:      // packet filter mismatch
+        case SRT_REJ_GROUP:       // group membership mismatch
+            return true;
+        default:                  // UNKNOWN/SYSTEM/PEER/RESOURCE/BACKLOG/CLOSE/CONGESTION/TIMEOUT/…
+            return false;         // transient -> let the Kotlin reconnect loop retry
+    }
+}
+
 bool SrtLink::Connect(const std::string& host, int port, const std::string& streamid, int latencyMs) {
     rejected_ = false;
     sockaddr_in addr{};
@@ -93,10 +113,10 @@ bool SrtLink::Connect(const std::string& host, int port, const std::string& stre
 
     // Blocking connect (the SrtSession runs it on its own egress thread).
     if (srt_connect(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SRT_ERROR) {
-        // A non-zero reject reason means the peer/handshake refused us (terminal); otherwise
-        // treat it as a transient connect error so the engine reconnects.
+        // Only a permanent auth/version/compat refusal is terminal; transient handshake failures
+        // (esp. SRT_REJ_TIMEOUT reconnecting to a listener still holding the previous peer) retry.
         int reason = srt_getrejectreason(sock_);
-        rejected_ = (reason != 0 /* SRT_REJ_UNKNOWN */);
+        rejected_ = IsPermanentRejectReason(reason);
         srt_close(sock_);
         sock_ = -1;
         return false;
