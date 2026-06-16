@@ -51,6 +51,10 @@ fun ControlRail(
     onGoLive: () -> Unit,
     onStop: () -> Unit,
     onSettings: () -> Unit,
+    showObsScenes: Boolean,
+    obsScenes: List<String>,
+    obsCurrentScene: String?,
+    onSwitchScene: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val reconnecting = state is StreamState.Reconnecting
@@ -69,6 +73,13 @@ fun ControlRail(
             AudioMeter(level = audioLevel)
             // Physical lens picker (ultrawide/main/tele); zoom WITHIN a lens is the slider over the preview.
             LensButtons(lenses = lenses, selectedPhysicalId = selectedPhysicalId, onSelect = onSelectLens)
+            if (showObsScenes) {
+                ObsSceneChip(
+                    scenes = obsScenes,
+                    currentScene = obsCurrentScene,
+                    onSwitchScene = onSwitchScene,
+                )
+            }
             if (errorReason != null) {
                 Text(errorReason, color = LiveRed, style = MaterialTheme.typography.bodyMedium)
                 OutlinedButton(onClick = onGoLive) { Text("Try again") }
@@ -88,20 +99,20 @@ fun ControlRail(
 
 @Preview(name = "setup", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailSetupPreview() = PlohoyTheme {
-    ControlRail(StreamState.Idle, "00:00", ConnectionHealth.Good, 0, 0f, emptyList(), null, true, null, {}, {}, {}, {}, {})
+    ControlRail(StreamState.Idle, "00:00", ConnectionHealth.Good, 0, 0f, emptyList(), null, true, null, {}, {}, {}, {}, {}, false, emptyList(), null, {})
 }
 
 @Preview(name = "live", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailLivePreview() = PlohoyTheme {
-    ControlRail(StreamState.Live, "01:23", ConnectionHealth.Warn, 4200, 0.8f, emptyList(), null, false, null, {}, {}, {}, {}, {})
+    ControlRail(StreamState.Live, "01:23", ConnectionHealth.Warn, 4200, 0.8f, emptyList(), null, false, null, {}, {}, {}, {}, {}, true, listOf("Main", "BRB"), "Main", {})
 }
 
 @Preview(name = "error", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailErrorPreview() = PlohoyTheme {
-    ControlRail(StreamState.Error("Connection refused"), "00:00", ConnectionHealth.Bad, 0, 0f, emptyList(), null, true, "Connection refused", {}, {}, {}, {}, {})
+    ControlRail(StreamState.Error("Connection refused"), "00:00", ConnectionHealth.Bad, 0, 0f, emptyList(), null, true, "Connection refused", {}, {}, {}, {}, {}, false, emptyList(), null, {})
 }
 
 @Preview(name = "reconnecting", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailReconnectingPreview() = PlohoyTheme {
-    ControlRail(StreamState.Reconnecting, "01:30", ConnectionHealth.Warn, 0, 0f, emptyList(), null, false, null, {}, {}, {}, {}, {})
+    ControlRail(StreamState.Reconnecting, "01:30", ConnectionHealth.Warn, 0, 0f, emptyList(), null, false, null, {}, {}, {}, {}, {}, true, listOf("Main", "BRB"), "BRB", {})
 }
