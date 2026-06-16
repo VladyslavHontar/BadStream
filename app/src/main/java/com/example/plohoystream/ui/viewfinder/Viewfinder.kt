@@ -98,6 +98,20 @@ fun Viewfinder(viewModel: StreamViewModel) {
         zoomNonce++
     }
 
+    // Lens-switch transition: freeze + blur the current frame to mask the camera-reopen gap.
+    var previewTextureView by remember { mutableStateOf<android.view.TextureView?>(null) }
+    var frozenFrame by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var transitionVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(transitionVisible, frozenFrame) {
+        if (transitionVisible) {
+            delay(700)            // long enough for the new physical camera to open
+            transitionVisible = false
+        }
+    }
+    fun beginLensTransition() {
+        previewTextureView?.bitmap?.let { frozenFrame = it; transitionVisible = true }
+    }
+
     // Capability-driven quality menu for the ACTIVE camera (CameraX CameraInfo) intersected with
     // the device encoder gate. Hoisted here so the settings UI (Task 9) can consume it. Recomputed
     // on facing change. ProcessCameraProvider.getInstance(...).get() blocks, so it runs on IO.
@@ -232,6 +246,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                         // The controller's preview surface is the source of truth for the preview.
                         (controller as? CameraXController)?.setPreviewSurface(it)
                     },
+                    onTextureView = { previewTextureView = it },
+                )
+                FreezeBlurOverlay(
+                    bitmap = frozenFrame,
+                    visible = transitionVisible,
+                    modifier = Modifier.matchParentSize(),
                 )
                 ZoomSlider(
                     zoom = zoom,
@@ -272,10 +292,14 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
                             onSelectLens = { lens ->
+                                beginLensTransition()
                                 zoom = 1f
                                 (controller as? CameraXController)?.selectLens(lens.physicalId)
                             },
-                            onFlip = { facing = CameraControls.opposite(facing); zoom = 1f },
+                            onFlip = {
+                                beginLensTransition()
+                                facing = CameraControls.opposite(facing); zoom = 1f
+                            },
                             onGoLive = viewModel::goLive,
                             onStop = viewModel::stop,
                             onSettings = viewModel::openSettings,

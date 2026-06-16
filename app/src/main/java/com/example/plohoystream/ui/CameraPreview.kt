@@ -43,6 +43,7 @@ fun CameraPreview(
     sensorOrientation: Int,
     isFrontFacing: Boolean = false,
     onSurface: (Surface?) -> Unit,
+    onTextureView: (TextureView) -> Unit = {},
 ) {
     val context = LocalContext.current
     BoxWithConstraints(
@@ -89,7 +90,7 @@ fun CameraPreview(
 
                         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
                     }
-                }
+                }.also(onTextureView)
             },
             update = { tv ->
                 if (tv.isAvailable) {
