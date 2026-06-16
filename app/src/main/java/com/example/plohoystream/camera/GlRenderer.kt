@@ -195,6 +195,7 @@ class GlRenderer {
     private var alphaScaleLoc = -1
 
     private var externalTextureId = -1
+    private var externalTextureId2 = -1
 
     // Freeze-blur resources.
     private var blurProgramHandle = -1
@@ -221,6 +222,10 @@ class GlRenderer {
             return externalTextureId
         }
 
+    /** External OES texture id for the SECONDARY (PiP) camera. Valid after [init]. */
+    val textureName2: Int
+        get() { checkInitialized(); checkGlThread(); return externalTextureId2 }
+
     /** Initializes EGL, compiles the SDR program and creates the external texture. */
     fun init() {
         check(!initialized) { "GlRenderer is already initialized" }
@@ -232,6 +237,7 @@ class GlRenderer {
             useProgram()
             externalTextureId = createExternalTexture()
             activateExternalTexture(externalTextureId)
+            externalTextureId2 = createExternalTexture()
             createBlurProgram()
             createFrozenFbo()
         } catch (e: RuntimeException) {
@@ -317,6 +323,62 @@ class GlRenderer {
                 "Failed to swap buffers with EGL error: 0x" +
                     Integer.toHexString(EGL14.eglGetError()),
             )
+            removeOutputSurfaceInternal(surface, false)
+        }
+    }
+
+    /**
+     * Composite two camera textures to [surface]: [primaryTransform]/[secondaryTransform] are the
+     * respective SurfaceTexture transforms; [pipLeft..pipBottom] is the inset rectangle in normalized
+     * frame coords (0..1, origin top-left). Primary fills the frame; secondary draws into the inset.
+     */
+    fun renderComposite(
+        timestampNs: Long,
+        primaryTransform: FloatArray,
+        secondaryTransform: FloatArray,
+        pipLeft: Float, pipTop: Float, pipRight: Float, pipBottom: Float,
+        surface: Surface,
+    ) {
+        checkInitialized(); checkGlThread()
+        var outputSurface = getOutSurfaceOrThrow(surface)
+        if (outputSurface === NO_OUTPUT_SURFACE) {
+            val created = createOutputSurfaceInternal(surface) ?: return
+            outputSurfaceMap[surface] = created
+            outputSurface = created
+        }
+        makeCurrent(outputSurface.eglSurface)
+        currentSurface = surface
+        GLES20.glViewport(0, 0, outputSurface.width, outputSurface.height)
+
+        // 1) Primary, full-frame.
+        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
+        GLES20.glUniform1f(alphaScaleLoc, 1.0f)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
+        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, primaryTransform, 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        // 2) Secondary into the inset rect. Convert [0..1] top-left rect to an NDC scale+translate.
+        //    Quad spans [-1,1]; NDC center x = 2*cx-1, y = 1-2*cy (flip Y); scale = rect extent.
+        val cx = (pipLeft + pipRight) * 0.5f
+        val cy = (pipTop + pipBottom) * 0.5f
+        val sx = (pipRight - pipLeft)
+        val sy = (pipBottom - pipTop)
+        val pipMatrix = FloatArray(16)
+        Matrix.setIdentityM(pipMatrix, 0)
+        Matrix.translateM(pipMatrix, 0, 2f * cx - 1f, 1f - 2f * cy, 0f)
+        Matrix.scaleM(pipMatrix, 0, sx, sy, 1f)
+        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, pipMatrix, 0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId2)
+        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, secondaryTransform, 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        // Restore defaults for the next single-camera render()/frozen path.
+        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
+
+        EGLExt.eglPresentationTimeANDROID(eglDisplay, outputSurface.eglSurface, timestampNs)
+        if (!EGL14.eglSwapBuffers(eglDisplay, outputSurface.eglSurface)) {
             removeOutputSurfaceInternal(surface, false)
         }
     }
@@ -827,6 +889,9 @@ class GlRenderer {
         }
         eglConfig = null
         externalTextureId = -1
+        // Reclaimed by eglTerminate above (like externalTextureId) — just clear the handle; a
+        // glDeleteTextures here would run with no current context.
+        externalTextureId2 = -1
         currentSurface = null
         glThread = null
     }
