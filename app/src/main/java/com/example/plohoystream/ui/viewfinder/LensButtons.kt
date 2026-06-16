@@ -5,7 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -21,11 +21,13 @@ import com.example.plohoystream.ui.theme.OnSurfaceWhite
 import kotlin.math.abs
 
 /**
- * Physical lens picker (ultrawide / main / tele) shown where the old 0.6×/1×/2× chips were.
- * Tapping a lens switches the bound physical camera. Hidden when the device exposes <2 lenses.
+ * Horizontal camera-sensor picker (ultrawide / main / tele) on the right rail. Tapping a sensor
+ * rebinds that physical back camera. Hidden when the device exposes <2 sensors (e.g. the front
+ * camera). The currently-bound sensor is filled/highlighted. Kept to a single row so it doesn't
+ * push the rail's bottom actions (e.g. the stop-stream button) off-screen while live.
  *
- * [selectedPhysicalId] null means the logical default (the ~1× main lens), so that one is shown
- * selected until the user explicitly picks a lens.
+ * [selectedPhysicalId] null means the logical default (the ~1× main sensor), so that one is shown
+ * selected until the user explicitly picks another.
  */
 @Composable
 fun LensButtons(
@@ -41,10 +43,10 @@ fun LensButtons(
             val selected = lens.physicalId == (selectedPhysicalId ?: mainId)
             Box(
                 Modifier
+                    .size(40.dp)
                     .clip(CircleShape)
                     .background(if (selected) OnSurfaceWhite else Color.Black.copy(alpha = 0.45f))
-                    .clickable { onSelect(lens) }
-                    .padding(horizontal = 11.dp, vertical = 7.dp),
+                    .clickable { onSelect(lens) },
                 contentAlignment = Alignment.Center,
             ) {
                 Text(

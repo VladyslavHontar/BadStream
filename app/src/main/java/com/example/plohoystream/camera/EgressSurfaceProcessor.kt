@@ -33,7 +33,13 @@ class EgressSurfaceProcessor : SurfaceProcessor {
 
     private companion object {
         const val TAG = "EgressSurfaceProcessor"
+        const val METER_EVERY = 6   // sample luma every Nth frame (~5Hz at 30fps) for Auto-ISO
     }
+
+    /** When true, [onLuma] is invoked ~5Hz with the average frame luma (0..1) for Auto-ISO. */
+    @Volatile var meteringEnabled = false
+    var onLuma: ((Float) -> Unit)? = null
+    private var meterFrameCount = 0
 
     private val glThread = HandlerThread("Egress-GL").apply { start() }
     private val glHandler = Handler(glThread.looper)
@@ -136,10 +142,16 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         executeSafely({
             val surface = output.getSurface(glExecutor) {
                 output.close()
+                // Remove from the active render set, but KEEP the renderer's EGL window surface
+                // alive. It belongs to the on-screen Surface (unchanged across a camera/lens switch),
+                // not this SurfaceOutput. A switch closes the old preview output and opens a new one
+                // backed by the SAME Surface; destroying + recreating the EGL window surface across
+                // that gap races CameraX's surface release/reacquire and leaves the BufferQueue
+                // permanently busy → eglCreateWindowSurface fails with EGL_BAD_ALLOC (black/frozen
+                // preview). The renderer reuses the live EGL surface when the same Surface
+                // re-registers, and GCs surfaces whose Surface became invalid (or on release).
                 val removed = outputSurfaces.remove(output)
-                if (removed != null) {
-                    renderer.unregisterOutputSurface(removed)
-                }
+                Log.d(TAG, "output closed surface=${removed?.hashCode()} (EGL kept; remaining=${outputSurfaces.size})")
             }
             renderer.registerOutputSurface(surface)
             outputSurfaces[output] = surface
@@ -168,12 +180,14 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     }
 
     private fun renderFrozenToAll() {
+        // Cover ONLY the encoded stream with the GL freeze-blur. The on-screen preview's
+        // CameraX-owned SurfaceOutput is being torn down and recreated during a camera/lens switch —
+        // creating an EGL window surface on that mid-swap BufferQueue here races CameraX and fails
+        // with EGL_BAD_ALLOC (a permanent black preview). The preview just holds its last frame
+        // across the brief reopen gap. If we're not streaming there's no encoder and this is a no-op.
+        val encoder = encoderSurface ?: return
         transitionTsNs += 33_000_000L   // ~30fps, monotonic in the camera timebase so PTS isn't dropped
-        val ts = transitionTsNs
-        for ((_, surface) in outputSurfaces) {
-            runCatching { renderer.renderFrozen(ts, surface) }
-        }
-        encoderSurface?.let { runCatching { renderer.renderFrozen(ts, it) } }
+        runCatching { renderer.renderFrozen(transitionTsNs, encoder) }
     }
 
     private fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
@@ -187,6 +201,7 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             // instantly; after that, the next real frame (the new camera) ends it and renders live.
             if (System.nanoTime() - transitionStartNs < 250_000_000L) return
             transitionActive = false
+            Log.d(TAG, "transition ended; rendering live (outputs=${outputSurfaces.size}, encoder=${encoderSurface != null})")
         }
 
         // Render to each CameraX preview output (transform adjusted by the SurfaceOutput). Cache
@@ -212,6 +227,14 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 renderer.render(timestampNs, transform, surface)
             } catch (e: RuntimeException) {
                 Log.e(TAG, "Failed to render encoder frame with OpenGL.", e)
+            }
+        }
+
+        // Auto-ISO metering: sample average luma at a low rate (the control loop runs ~5Hz). Done
+        // last so a meter readback can't perturb the preview/encoder renders for this frame.
+        if (meteringEnabled) {
+            if (meterFrameCount++ % METER_EVERY == 0) {
+                onLuma?.let { cb -> runCatching { renderer.meterLuma(textureTransform) }.getOrNull()?.let(cb) }
             }
         }
     }
