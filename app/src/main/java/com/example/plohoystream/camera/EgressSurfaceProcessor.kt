@@ -57,6 +57,9 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     // all outputs (preview + encoder, so it's in the stream too) until the new camera's first frame
     // arrives. Ended frame-based in onFrameAvailable, with a safety timeout.
     @Volatile private var transitionActive = false
+    private var lastFrameTimestampNs = 0L   // camera clock — transition PTS continues from here
+    private var transitionTsNs = 0L
+    private var transitionStartNs = 0L
     private val transitionTick = object : Runnable {
         override fun run() {
             if (!transitionActive || isReleased) return
@@ -156,6 +159,8 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 .onFailure { Log.e(TAG, "captureFrozen failed", it); return@executeSafely }
             if (!transitionActive) {
                 transitionActive = true
+                transitionStartNs = System.nanoTime()
+                transitionTsNs = lastFrameTimestampNs   // continue the camera timebase, monotonically
                 glHandler.post(transitionTick)
                 glHandler.postDelayed({ transitionActive = false }, 2000L)   // safety stop
             }
@@ -163,7 +168,8 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     }
 
     private fun renderFrozenToAll() {
-        val ts = System.nanoTime()
+        transitionTsNs += 33_000_000L   // ~30fps, monotonic in the camera timebase so PTS isn't dropped
+        val ts = transitionTsNs
         for ((_, surface) in outputSurfaces) {
             runCatching { renderer.renderFrozen(ts, surface) }
         }
@@ -175,8 +181,13 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         surfaceTexture.updateTexImage()
         surfaceTexture.getTransformMatrix(textureTransform)
         val timestampNs = surfaceTexture.timestamp
-        // The new camera's first frame ends the transition (frame-based — lasts exactly the gap).
-        transitionActive = false
+        lastFrameTimestampNs = timestampNs
+        if (transitionActive) {
+            // Keep the blur up for at least a min window so a stale in-flight frame can't kill it
+            // instantly; after that, the next real frame (the new camera) ends it and renders live.
+            if (System.nanoTime() - transitionStartNs < 250_000_000L) return
+            transitionActive = false
+        }
 
         // Render to each CameraX preview output (transform adjusted by the SurfaceOutput). Cache
         // that orientation-corrected transform so the encoder matches the preview orientation.
