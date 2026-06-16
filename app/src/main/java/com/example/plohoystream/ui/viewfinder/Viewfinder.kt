@@ -154,14 +154,22 @@ fun Viewfinder(viewModel: StreamViewModel) {
         CameraCapabilities.select(cameras, facing, ui.settings.quality.fps)
     }
 
-    LaunchedEffect(config, surface, encoderSurface, activeHdr) {
+    // Single source of truth for (re)binding the camera. Keyed on dualOn so toggling dual mode
+    // rebinds here — the toggle only flips dualOn, never binds directly (two binders would race and
+    // clobber each other). In dual mode bind front+back concurrently; otherwise the single camera.
+    LaunchedEffect(config, surface, encoderSurface, activeHdr, dualOn) {
         val c = config ?: return@LaunchedEffect
         val targets = CameraTargets.select(surface, encoderSurface)
         if (targets.isEmpty()) {
             controller.stop()           // idle + no preview (e.g. backgrounded while not live)
         } else {
-            controller.start(c, targets, hdr = activeHdr)
-            controller.setZoom(zoom)
+            val cx = controller as? CameraXController
+            if (dualOn && cx != null) {
+                cx.startDual(primaryFacing = facing, targets = targets, onFailed = { dualOn = false })
+            } else {
+                controller.start(c, targets, hdr = activeHdr)
+                controller.setZoom(zoom)
+            }
         }
     }
 
@@ -174,6 +182,8 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val currentEncoder by rememberUpdatedState(encoderSurface)
     val currentHdr by rememberUpdatedState(activeHdr)
     val currentZoom by rememberUpdatedState(zoom)
+    val currentDualOn by rememberUpdatedState(dualOn)
+    val currentFacing by rememberUpdatedState(facing)
     var resumed by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -184,8 +194,13 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     val c = currentConfig
                     val targets = CameraTargets.select(currentSurface, currentEncoder)
                     if (c != null && targets.isNotEmpty()) {
-                        controller.start(c, targets, hdr = currentHdr)
-                        controller.setZoom(currentZoom)
+                        val cx = controller as? CameraXController
+                        if (currentDualOn && cx != null) {
+                            cx.startDual(primaryFacing = currentFacing, targets = targets, onFailed = {})
+                        } else {
+                            controller.start(c, targets, hdr = currentHdr)
+                            controller.setZoom(currentZoom)
+                        }
                     }
                 }
                 Lifecycle.Event.ON_PAUSE -> resumed = false
@@ -358,22 +373,9 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             onSwitchScene = viewModel::obsSwitchScene,
                             dualSupported = dualSupported,
                             dualOn = dualOn,
-                            onToggleDual = {
-                                val c = controller as? CameraXController
-                                if (c != null) {
-                                    if (dualOn) {
-                                        dualOn = false
-                                        config?.let { c.start(it, listOfNotNull(surface, encoderSurface), hdr = activeHdr) }
-                                    } else {
-                                        dualOn = true
-                                        c.startDual(
-                                            primaryFacing = facing,
-                                            targets = listOfNotNull(surface, encoderSurface),
-                                            onFailed = { dualOn = false },
-                                        )
-                                    }
-                                }
-                            },
+                            // Only flip the flag; the binding LaunchedEffect (keyed on dualOn) does the
+                            // actual (re)bind, so there's a single binder and no race with start().
+                            onToggleDual = { dualOn = !dualOn },
                             modifier = Modifier.fillMaxSize().padding(12.dp),
                         )
                     }
