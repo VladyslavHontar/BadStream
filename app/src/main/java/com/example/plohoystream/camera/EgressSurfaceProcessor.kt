@@ -192,8 +192,19 @@ class EgressSurfaceProcessor : SurfaceProcessor {
 
     private fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
         if (isReleaseRequested.get()) return
-        surfaceTexture.updateTexImage()
-        surfaceTexture.getTransformMatrix(textureTransform)
+        // updateTexImage()/getTransformMatrix can fail natively when the camera producer is
+        // disconnected mid-frame during a teardown — app backgrounded, screen rotation, or a camera
+        // rebind — while this frame callback was already queued on the GL thread. That is a
+        // transient, expected condition: skip the frame instead of letting the native
+        // RuntimeException go uncaught on the Egress-GL thread and crash the whole process. (The
+        // renderer.render() calls below are already guarded the same way.)
+        try {
+            surfaceTexture.updateTexImage()
+            surfaceTexture.getTransformMatrix(textureTransform)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Skipping frame: updateTexImage failed (camera producer torn down?)", e)
+            return
+        }
         val timestampNs = surfaceTexture.timestamp
         lastFrameTimestampNs = timestampNs
         if (transitionActive) {
