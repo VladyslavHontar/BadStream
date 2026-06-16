@@ -112,9 +112,10 @@ class GlRenderer {
 
         // Capture resolution for the frozen frame. Moderate (not tiny) so the gaussian — not raw
         // downscale aliasing — produces the blur. BLUR_SCALE widens the gaussian for a heavier look.
-        const val FROZEN_W = 200
-        const val FROZEN_H = 112
+        const val FROZEN_W = 360
+        const val FROZEN_H = 203
         const val BLUR_SCALE = 2.0f
+        const val BLUR_ITERATIONS = 3   // each = one separable (H+V) gaussian pass
 
         const val SIZEOF_FLOAT = 4
         const val PIXEL_STRIDE = 4
@@ -309,10 +310,12 @@ class GlRenderer {
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
         GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, textureTransform, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        // 2) Separable gaussian: frozen --H--> ping --V--> frozen.
+        // 2) Iterated separable gaussian: frozen --H--> ping --V--> frozen, widened by iterating.
         bindBlurProgram()
-        blurPass(frozenTexId, pingFbo, BLUR_SCALE / FROZEN_W, 0f)
-        blurPass(pingTexId, frozenFbo, 0f, BLUR_SCALE / FROZEN_H)
+        repeat(BLUR_ITERATIONS) {
+            blurPass(frozenTexId, pingFbo, BLUR_SCALE / FROZEN_W, 0f)
+            blurPass(pingTexId, frozenFbo, 0f, BLUR_SCALE / FROZEN_H)
+        }
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         bindMainProgram()
         currentSurface = null // force viewport reset on the next live render()
