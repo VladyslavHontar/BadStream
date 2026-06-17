@@ -6,21 +6,20 @@ import org.junit.Test
 class DisplayTransformTest {
     private val eps = 1e-4f
 
-    @Test fun netRotation_back_portraitSensor_landscapeDisplay() {
-        assertEquals(0, DisplayTransform.netRotationDegrees(sensorDeg = 90, displayDeg = 90, isFront = false))
-        assertEquals(90, DisplayTransform.netRotationDegrees(sensorDeg = 90, displayDeg = 0, isFront = false))
-    }
-
-    @Test fun netRotation_front_addsDisplayMinusQuarterTurn() {
-        // On-device verified: front sensor 270 + display 90 → upright at 270 (= 270+90-90).
+    // Unified on-device-verified formula: (sensor + display - 90), normalized. Same for both cameras;
+    // the front horizontal mirror is applied separately in matrix() and doesn't change net rotation.
+    @Test fun netRotation_isSensorPlusDisplayMinusQuarterTurn() {
+        // front sensor 270 + display 90 → 270 (upright); back sensor 90 + display 90 → 90 (upright after mirror-free path).
         assertEquals(270, DisplayTransform.netRotationDegrees(sensorDeg = 270, displayDeg = 90, isFront = true))
+        assertEquals(90, DisplayTransform.netRotationDegrees(sensorDeg = 90, displayDeg = 90, isFront = false))
+        // isFront does not affect the rotation value (only matrix()'s mirror).
         assertEquals(90, DisplayTransform.netRotationDegrees(sensorDeg = 90, displayDeg = 90, isFront = true))
     }
 
     @Test fun netRotation_isAlwaysNormalizedTo0_359() {
-        assertEquals(0, DisplayTransform.netRotationDegrees(sensorDeg = 270, displayDeg = 270, isFront = false))
-        // raw = 0 - 90 = -90 must normalize to 270 (the double-mod's reason for existing).
-        assertEquals(270, DisplayTransform.netRotationDegrees(sensorDeg = 0, displayDeg = 90, isFront = false))
+        // raw = 0 + 0 - 90 = -90 must normalize to 270 (the double-mod's reason for existing).
+        assertEquals(270, DisplayTransform.netRotationDegrees(sensorDeg = 0, displayDeg = 0, isFront = false))
+        assertEquals(90, DisplayTransform.netRotationDegrees(sensorDeg = 270, displayDeg = 270, isFront = false))
     }
 
     @Test fun coverCrop_rectWiderThanContent_cropsHeight() {

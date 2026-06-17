@@ -14,14 +14,14 @@ object DisplayTransform {
 
     /**
      * Clockwise degrees to rotate the sampled sensor image upright on the display, for a camera fed
-     * RAW into the compositor (no CameraX SurfaceOutput transform). Back: `(sensor - display)`.
-     * Front: `(sensor + display - 90)` — the extra quarter-turn vs. the textbook `(sensor + display)`
-     * accounts for the horizontal mirror flipping the rotation sense in texture space; it was
-     * calibrated on-device (front sensor 270 + display 90 → upright at 270, not 0). All normalized to
-     * 0..359. Verified at display ROTATION_90 (the app is landscape-locked).
+     * RAW into the compositor (no CameraX SurfaceOutput transform). Back: `(sensor - display - 90)`,
+     * Front: `(sensor + display - 90)`. Both carry a common `-90` device/texture offset (the secondary
+     * SurfaceTexture arrives a quarter-turn from upright); front flips the display sign because of its
+     * horizontal mirror. Calibrated on-device at display ROTATION_90: back sensor 90 → 270 (90° CCW),
+     * front sensor 270 → 270, both upright. All normalized to 0..359.
      */
     fun netRotationDegrees(sensorDeg: Int, displayDeg: Int, isFront: Boolean): Int {
-        val raw = if (isFront) sensorDeg + displayDeg - 90 else sensorDeg - displayDeg
+        val raw = sensorDeg + displayDeg - 90
         return ((raw % 360) + 360) % 360
     }
 
