@@ -26,6 +26,11 @@ class CameraStreamEngine(
     // record (4th arg) = whether this go-live should also record locally (Settings.recordWhileStreaming).
     private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality, Boolean) -> Unit,
     private val stopMedia: () -> Unit,
+    // Session lifecycle (once per go-live / full stop), invoked from the foreground start()/stop().
+    // The foreground service must start here — NOT in startMedia, which re-runs on every reconnect
+    // attempt and would call startForegroundService() from the background (Android 12+ crash).
+    private val onLive: () -> Unit = {},
+    private val onStopped: () -> Unit = {},
     // Applies an ABR-chosen encoder bitrate (bps) at runtime. No-op by default (RTMP / tests).
     private val applyBitrate: (Int) -> Unit = {},
     private val pollIntervalMs: Long = 250,
@@ -100,6 +105,7 @@ class CameraStreamEngine(
         )
 
         userWantsLive = true
+        onLive()   // foreground-safe: start() is the user's go-live tap. Survives reconnects.
         val quality = config.quality
         val requested = resolveRequest(
             config.codecOverride, hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled,
@@ -196,6 +202,7 @@ class CameraStreamEngine(
         _health.value = ConnectionHealth.Good
         _audioLevel.value = 0f
         streamer?.stop(); streamer = null
+        onStopped()   // release the foreground service for the whole session (not per reconnect)
         _state.value = StreamState.Idle
     }
 
