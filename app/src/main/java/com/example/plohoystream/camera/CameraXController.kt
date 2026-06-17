@@ -258,6 +258,15 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
                 Log.w(TAG, "enterDual: could not resolve default back/front ids (back=$backId front=$frontId)")
                 onFailed(); return@execute
             }
+            // Capture the currently-selected single-mode physical lens BEFORE releasing CameraX. If
+            // single was on a non-default back lens (tele id3 / ultrawide id2), CameraX's teardown of
+            // that physical-id camera graph is slow and still holds a camera slot; opening {default
+            // back, default front} then hits ERROR_MAX_CAMERAS_IN_USE. We make the cameras-free gate
+            // ALSO wait for that lens to close. (null / the default main needs no extra wait.)
+            val extra = _selectedPhysicalId.value?.let { setOf(it) } ?: emptySet()
+            // Dual always uses the default back (id0); reset single's selected-lens bookkeeping so it's
+            // consistent and we don't re-conflict on the eventual exit back to single.
+            _selectedPhysicalId.value = null
             // Release any CameraX binding first; the processor's standalone mode owns the surfaces.
             runCatching { provider?.unbindAll() }
             camera = null
@@ -280,8 +289,9 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             }
             // unbindAll() closes the prior CameraX session ASYNCHRONOUSLY; opening the two Camera2
             // devices before that finishes races CAMERA_IN_USE → onFailed → dual turns off. Gate the
-            // session start on both default cameras being free (or a 2s timeout).
-            awaitCamerasFreeThenBind {
+            // session start on both default cameras AND the just-released non-default lens (extra)
+            // being free (or a 2s timeout).
+            awaitCamerasFreeThenBind(extra) {
                 session.start(
                     primaryFacing = primaryFacing,
                     backId = backId,
@@ -364,18 +374,23 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     }
 
     /**
-     * Run [bind] (on the main thread) once the default front AND back cameras are both reported
-     * available by [android.hardware.camera2.CameraManager] — i.e. the prior session's camera has
-     * finished its async close — or after a 2s safety timeout. Prevents the
-     * ERROR_CAMERA_LIMIT_EXCEEDED that wedges a concurrent re-bind issued too soon after unbindAll().
+     * Run [bind] (on the main thread) once the default front AND back cameras — PLUS any [extraIds]
+     * the caller names — are all reported available by [android.hardware.camera2.CameraManager],
+     * i.e. the prior session's camera(s) have finished their async close — or after a 2s safety
+     * timeout. Prevents the ERROR_CAMERA_LIMIT_EXCEEDED / ERROR_MAX_CAMERAS_IN_USE that wedges a
+     * concurrent re-bind issued too soon after unbindAll(). [extraIds] is how dual entry waits for a
+     * non-default single-mode lens (tele/ultrawide) graph to fully tear down before opening {0,1}.
      */
-    private fun awaitCamerasFreeThenBind(bind: () -> Unit) {
+    private fun awaitCamerasFreeThenBind(extraIds: Set<String> = emptySet(), bind: () -> Unit) {
         val mgr = runCatching {
             appContext.getSystemService(android.content.Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
         }.getOrNull()
         val backId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_BACK) }
         val frontId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_FRONT) }
         if (mgr == null || backId == null || frontId == null) { bind(); return }
+        // The full set of ids that must all be available before we bind: default back + front, plus
+        // any extra (the selected tele/ultrawide lens) the caller asked us to wait on.
+        val required = HashSet<String>().apply { add(backId); add(frontId); addAll(extraIds) }
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         val available = HashSet<String>()
         var done = false
@@ -390,7 +405,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         cb = object : android.hardware.camera2.CameraManager.AvailabilityCallback() {
             override fun onCameraAvailable(cameraId: String) {
                 available.add(cameraId)
-                if (available.contains(backId) && available.contains(frontId)) finish()
+                if (available.containsAll(required)) finish()
             }
             override fun onCameraUnavailable(cameraId: String) { available.remove(cameraId) }
         }

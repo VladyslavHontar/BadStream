@@ -484,16 +484,29 @@ class DualCameraSession(
         runCatching { processor.stopStandalone() }
         dualInputs = null
 
-        cameraThread?.quitSafely()
+        // Don't quit the camera thread immediately: the device.close() calls above complete
+        // asynchronously and a late CameraDevice.onClosed can still post to this handler. Quitting
+        // now races that post → "sending message to a Handler on a dead thread". Defer the quit a
+        // short beat so in-flight close callbacks drain first (non-fatal noise either way, but this
+        // removes it cheaply). Capture locally so the deferred runnable doesn't touch reset fields.
+        val thread = cameraThread
         cameraThread = null
         cameraHandler = null
+        if (thread != null) {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                runCatching { thread.quitSafely() }
+            }, QUIT_DELAY_MS)
+        }
     }
 
     private companion object {
         const val TAG = "DualCameraSession"
         // Bounded open/configure retry: up to MAX_OPEN_ATTEMPTS total opens, ~RETRY_DELAY_MS apart,
         // to ride out a transient HAL teardown conflict (e.g. tele session still closing) on entry.
-        const val MAX_OPEN_ATTEMPTS = 3
-        const val RETRY_DELAY_MS = 350L
+        const val MAX_OPEN_ATTEMPTS = 5
+        const val RETRY_DELAY_MS = 450L
+        // Defer the camera HandlerThread quit so late CameraDevice.onClosed callbacks drain first
+        // (avoids "sending message to a Handler on a dead thread" noise on stop()).
+        const val QUIT_DELAY_MS = 250L
     }
 }
