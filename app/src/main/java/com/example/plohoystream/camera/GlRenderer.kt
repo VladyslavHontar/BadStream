@@ -359,44 +359,35 @@ class GlRenderer {
         GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, primaryTransform, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        // 2) Secondary into the inset rect, fitted to the camera's aspect (centered) so it isn't
-        //    stretched. The secondary is rotated 90° (below), so its DISPLAY aspect swaps W/H:
-        //    displayAspect = srcH/srcW. Area of the box not covered by the fitted content just shows
-        //    the primary underneath (no letterbox bars). Quad spans [-1,1]; NDC center x = 2*cx-1,
-        //    y = 1-2*cy (flip Y); scale = rect extent.
+        // 2) Secondary fills the PiP box (a landscape inset). The front camera is rotated 90° CCW to
+        //    upright (which makes the content portrait), then CENTER-CROPPED to fill the landscape box
+        //    without stretching — overflow is cropped, not letterboxed. Quad = the full box.
         val outW = outputSurface.width.toFloat()
         val outH = outputSurface.height.toFloat()
-        val dispAspect = if (secSrcW > 0 && secSrcH > 0) secSrcH.toFloat() / secSrcW.toFloat() else 1f
-        val boxWpx = (pipRight - pipLeft) * outW
-        val boxHpx = (pipBottom - pipTop) * outH
-        val fitWpx: Float
-        val fitHpx: Float
-        if (boxWpx / boxHpx > dispAspect) {
-            fitHpx = boxHpx; fitWpx = boxHpx * dispAspect       // box wider than content → pillarbox
-        } else {
-            fitWpx = boxWpx; fitHpx = boxWpx / dispAspect       // box taller than content → letterbox
-        }
-        val fitWn = fitWpx / outW
-        val fitHn = fitHpx / outH
-        val fitL = pipLeft + ((pipRight - pipLeft) - fitWn) * 0.5f
-        val fitT = pipTop + ((pipBottom - pipTop) - fitHn) * 0.5f
-        val cx = fitL + fitWn * 0.5f
-        val cy = fitT + fitHn * 0.5f
-        val sx = fitWn
-        val sy = fitHn
+        val cx = (pipLeft + pipRight) * 0.5f
+        val cy = (pipTop + pipBottom) * 0.5f
+        val sx = (pipRight - pipLeft)
+        val sy = (pipBottom - pipTop)
         val pipMatrix = FloatArray(16)
         Matrix.setIdentityM(pipMatrix, 0)
         Matrix.translateM(pipMatrix, 0, 2f * cx - 1f, 1f - 2f * cy, 0f)
         Matrix.scaleM(pipMatrix, 0, sx, sy, 1f)
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, pipMatrix, 0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId2)
-        // The secondary (PiP) camera bypasses CameraX's orientation handling (it feeds this texture
-        // directly), so upright the front camera by rotating the IMAGE 90° CCW. Texture-coord rotation
-        // is the inverse of image rotation, so rotate the tex coords -90° about the texture centre.
+
+        // Box pixel aspect vs the content's aspect AFTER the 90° rotation (display W/H = srcH/srcW).
+        // Crop the overflow axis so the rotated content covers the box undistorted (cover, not fit).
+        val boxAspect = (sx * outW) / (sy * outH)
+        val contentAspect = if (secSrcW > 0 && secSrcH > 0) secSrcH.toFloat() / secSrcW.toFloat() else 1f
+        var cropX = 1f
+        var cropY = 1f
+        if (boxAspect > contentAspect) cropY = contentAspect / boxAspect else cropX = boxAspect / contentAspect
+        // Rotate the IMAGE 90° CCW (tex coords -90° about centre) and crop-scale about the same centre.
         val secRot = FloatArray(16)
         Matrix.setIdentityM(secRot, 0)
         Matrix.translateM(secRot, 0, 0.5f, 0.5f, 0f)
         Matrix.rotateM(secRot, 0, -90f, 0f, 0f, 1f)
+        Matrix.scaleM(secRot, 0, cropX, cropY, 1f)
         Matrix.translateM(secRot, 0, -0.5f, -0.5f, 0f)
         val secTex = FloatArray(16)
         Matrix.multiplyMM(secTex, 0, secRot, 0, secondaryTransform, 0)
