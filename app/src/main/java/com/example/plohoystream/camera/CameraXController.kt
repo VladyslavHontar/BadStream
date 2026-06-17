@@ -91,12 +91,19 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     /** Manual-exposure state (shutter for motion blur + ISO) for the viewfinder's exposure panel. */
     val exposure: StateFlow<ExposureState> = _exposure.asStateFlow()
 
+    private val _secondaryPipAspect = MutableStateFlow(1f)
+    /** The secondary (PiP) camera's displayed aspect (w/h, after upright rotation). The viewfinder
+     *  sizes the PiP box to this so the whole secondary frame shows without cropping. */
+    val secondaryPipAspect: StateFlow<Float> = _secondaryPipAspect.asStateFlow()
+
     private var camera: Camera? = null
 
     init {
         registry.currentState = Lifecycle.State.CREATED
         // Auto-ISO: the GL meter (GL thread) hands us scene luma; run the control law on main.
         processor.onLuma = { luma -> mainExecutor.execute { onMeteredLuma(luma) } }
+        // Secondary PiP aspect (GL thread) → publish on main for the viewfinder to size the PiP box.
+        processor.onSecondaryAspect = { aspect -> mainExecutor.execute { _secondaryPipAspect.value = aspect } }
         val future = ProcessCameraProvider.getInstance(appContext)
         future.addListener({
             try {

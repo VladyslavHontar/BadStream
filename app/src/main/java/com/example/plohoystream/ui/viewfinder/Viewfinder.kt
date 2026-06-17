@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -92,6 +93,11 @@ fun Viewfinder(viewModel: StreamViewModel) {
     }
     val exposure by exposureFlow.collectAsStateWithLifecycle()
     var exposureOpen by remember { mutableStateOf(false) }
+    // Secondary (PiP) camera's displayed aspect, so the PiP box can match the source (no crop).
+    val pipAspectFlow = remember(controller) {
+        (controller as? CameraXController)?.secondaryPipAspect ?: MutableStateFlow(1f)
+    }
+    val pipAspect by pipAspectFlow.collectAsStateWithLifecycle()
     var scene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.SINGLE) }
     val dualOn = scene.isDual
     // Remember the dual layout so toggling dual off then on restores the user's PiP position/size
@@ -184,6 +190,17 @@ fun Viewfinder(viewModel: StreamViewModel) {
     LaunchedEffect(scene) {
         val cx = controller as? CameraXController ?: return@LaunchedEffect
         if (scene.isDual) cx.setScene(scene)
+    }
+
+    // Size the PiP box to the secondary camera's source aspect (no cropping). Fires when the source
+    // aspect resolves (bind/swap) or dual turns on — not on every drag, so it never fights gestures.
+    // regionAspect is the GL output (16:9 camera surface) the composite renders into.
+    LaunchedEffect(pipAspect, dualOn, config) {
+        if (!dualOn) return@LaunchedEffect
+        val region = config?.let { it.previewSize.width.toFloat() / it.previewSize.height } ?: (16f / 9f)
+        scene = scene.updateLayer(com.example.plohoystream.camera.scene.SourceId.SECONDARY) {
+            com.example.plohoystream.camera.scene.SceneEdits.setAspect(it, region, pipAspect)
+        }
     }
 
     // Force a fresh camera bind when the app returns to the foreground. On resume the TextureView
@@ -342,18 +359,27 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     )
                 }
                 if (dualOn) {
-                    PipOverlay(
-                        scene = scene,
-                        onSceneChange = { scene = it },
-                        onSwap = {
-                            // Blur over the rebind, then flip which camera is the big (primary) view;
-                            // the binder (config depends on facing) rebinds dual with the high-res slot
-                            // following the new primary.
-                            (controller as? CameraXController)?.beginCameraTransition()
-                            facing = CameraControls.opposite(facing)
-                        },
+                    // Lay the overlay over the SAME letterboxed camera region the preview shows (and the
+                    // GL composite renders into), so the PiP border lines up with the rendered PiP.
+                    androidx.compose.foundation.layout.Box(
                         modifier = Modifier.fillMaxSize(),
-                    )
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        PipOverlay(
+                            scene = scene,
+                            onSceneChange = { scene = it },
+                            onSwap = {
+                                // Blur over the rebind, then flip which camera is the big (primary) view;
+                                // the binder (config depends on facing) rebinds dual with the high-res slot
+                                // following the new primary.
+                                (controller as? CameraXController)?.beginCameraTransition()
+                                facing = CameraControls.opposite(facing)
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .aspectRatio(previewAspect),
+                        )
+                    }
                 }
             }
             Box(modifier = Modifier.width(rightWidth).fillMaxHeight()) {

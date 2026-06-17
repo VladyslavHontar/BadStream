@@ -46,10 +46,12 @@ data class Scene(val layers: List<SceneLayer>) {
     }
 }
 
-/** Pure edits applied to the PiP layer's rect (kept square in normalized space). */
+/** Pure edits applied to the PiP layer's rect. The rect's aspect tracks the source camera (set via
+ *  [setAspect]); moves/resizes preserve that aspect. */
 object SceneEdits {
-    const val MIN_PIP_WF = 0.15f
-    const val MAX_PIP_WF = 0.5f
+    const val MIN_PIP_WF = 0.12f
+    const val MAX_PIP_WF = 0.40f
+    private const val MAX_SPAN = 0.92f   // largest normalized extent a PiP may occupy on either axis
 
     /** Re-center [r] on ([cx],[cy]), keeping its size, clamped fully inside the unit square. A rect
      *  wider/taller than the unit square (half-extent >= 0.5) can't fit, so it is centered on that
@@ -62,13 +64,30 @@ object SceneEdits {
         return NormRect(clampedCx - halfW, clampedCy - halfH, clampedCx + halfW, clampedCy + halfH)
     }
 
-    /** Resize [r] to a square of [widthFraction] (clamped to [MIN_PIP_WF]..[MAX_PIP_WF]) about its
-     *  center, then clamp back inside the unit square. */
+    /** Build a [wf]×[hf] rect centered on ([cx],[cy]), shrunk uniformly if it would exceed the frame,
+     *  then clamped inside the unit square. */
+    private fun centeredBox(cx: Float, cy: Float, wf: Float, hf: Float): NormRect {
+        var w = wf; var h = hf
+        val span = maxOf(w, h)
+        if (span > MAX_SPAN) { val s = MAX_SPAN / span; w *= s; h *= s }
+        return moveTo(NormRect(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f), cx, cy)
+    }
+
+    /** Resize [r] to width [widthFraction] (clamped to [MIN_PIP_WF]..[MAX_PIP_WF]) about its center,
+     *  PRESERVING its current aspect (so a source-matched box stays source-matched). */
     fun resizeKeepingCenter(r: NormRect, widthFraction: Float): NormRect {
+        val aspect = if (r.height > 0f) r.width / r.height else 1f   // w/h
         val wf = widthFraction.coerceIn(MIN_PIP_WF, MAX_PIP_WF)
-        val half = wf * 0.5f
-        val centered = NormRect(r.centerX - half, r.centerY - half, r.centerX + half, r.centerY + half)
-        return moveTo(centered, centered.centerX, centered.centerY)
+        return centeredBox(r.centerX, r.centerY, wf, wf / aspect)
+    }
+
+    /** Reshape [r] to the source camera's aspect: with the box on a surface of [regionAspect] (w/h),
+     *  a pixel box of [contentAspect] (w/h) needs normalized height = width * regionAspect /
+     *  contentAspect. Keeps [r]'s width (clamped) and center; shrinks to fit a tall portrait source. */
+    fun setAspect(r: NormRect, regionAspect: Float, contentAspect: Float): NormRect {
+        if (contentAspect <= 0f || regionAspect <= 0f) return r
+        val wf = r.width.coerceIn(MIN_PIP_WF, MAX_PIP_WF)
+        return centeredBox(r.centerX, r.centerY, wf, wf * regionAspect / contentAspect)
     }
 
     /** Snap [r] to whichever corner its center is closest to, inset by [margin]. The horizontal and

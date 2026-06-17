@@ -66,6 +66,11 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         })
     }
 
+    /** Invoked (on the GL thread) with the SECONDARY camera's displayed aspect (w/h, after its
+     *  upright rotation) once its frame size is known — so the UI can size the PiP box to match the
+     *  source and avoid cropping. */
+    @Volatile var onSecondaryAspect: ((Float) -> Unit)? = null
+
     private val dualMode: Boolean get() = scene.isDual
 
     /** When true, [onLuma] is invoked ~5Hz with the average frame luma (0..1) for Auto-ISO. */
@@ -186,6 +191,14 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             secondarySrcW = request.resolution.width
             secondarySrcH = request.resolution.height
             secondaryTexture = st
+            // Tell the UI the secondary's displayed aspect (post-rotation) so it can size the PiP
+            // box to the source and avoid cropping.
+            val rot = com.example.plohoystream.camera.scene.DisplayTransform
+                .netRotationDegrees(secondarySensorDeg, displayDeg, secondaryIsFront)
+            onSecondaryAspect?.invoke(
+                com.example.plohoystream.camera.scene.DisplayTransform
+                    .displayedAspect(secondarySrcW, secondarySrcH, rot),
+            )
             val sfc = Surface(st)
             request.provideSurface(sfc, glExecutor) {
                 st.setOnFrameAvailableListener(null)

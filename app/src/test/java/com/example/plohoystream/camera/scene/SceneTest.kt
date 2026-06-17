@@ -48,14 +48,30 @@ class SceneTest {
         assertTrue(edge.top >= -eps && edge.bottom <= 1f + eps)
     }
 
-    @Test fun resizeKeepingCenter_clampsToMinMaxAndStaysSquare() {
-        val r = NormRect(0.4f, 0.4f, 0.6f, 0.6f)
+    @Test fun resizeKeepingCenter_clampsWidthToMinMax() {
+        val r = NormRect(0.4f, 0.4f, 0.6f, 0.6f)               // square
         val big = SceneEdits.resizeKeepingCenter(r, 10f)
         assertEquals(SceneEdits.MAX_PIP_WF, big.width, eps)
-        assertEquals(big.width, big.height, eps)
+        assertEquals(big.width, big.height, eps)               // square input stays square
         assertEquals(0.5f, big.centerX, eps)
         val small = SceneEdits.resizeKeepingCenter(r, 0f)
         assertEquals(SceneEdits.MIN_PIP_WF, small.width, eps)
+    }
+
+    @Test fun resizeKeepingCenter_preservesNonSquareAspect() {
+        val r = NormRect(0.4f, 0.3f, 0.6f, 0.7f)               // w=0.2, h=0.4, aspect 0.5
+        val resized = SceneEdits.resizeKeepingCenter(r, 0.3f)
+        assertEquals(0.3f, resized.width, eps)
+        assertEquals(0.6f, resized.height, eps)                // height tracks width at aspect 0.5
+        assertEquals(r.centerX, resized.centerX, eps)
+        assertEquals(r.centerY, resized.centerY, eps)
+    }
+
+    @Test fun setAspect_matchesSourceOnTheRenderSurface() {
+        // width 0.2 on a 16:9 surface with a 3:4 (0.75) source → height = 0.2 * (16/9) / 0.75.
+        val r = SceneEdits.setAspect(NormRect(0.5f, 0.1f, 0.7f, 0.3f), regionAspect = 16f / 9f, contentAspect = 0.75f)
+        assertEquals(0.2f, r.width, eps)
+        assertEquals(0.2f * (16f / 9f) / 0.75f, r.height, eps)
     }
 
     @Test fun snapToCorner_choosesNearestCornerByCenterQuadrant() {
