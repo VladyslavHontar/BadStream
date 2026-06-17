@@ -98,17 +98,24 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
 
     private var camera: Camera? = null
 
-    // Dual (concurrent) bind state. Non-null [dualPrimaryFacing] means the concurrent pair is the
-    // active binding, so a lens switch / rebind must go through [bindDualInternal] (re-binding the
-    // PAIR) rather than the single path — otherwise the secondary (PiP) camera is dropped.
-    private var dualPrimaryFacing: Facing? = null
-    private var dualScene: com.example.plohoystream.camera.scene.Scene? = null
-    private var dualOnFailed: () -> Unit = {}
-
-    // TEMP (Task 4 verification; replaced in Task 6): standalone two-Camera2-device dual path.
-    // Caps are read once on a background thread in init; the session is built lazily on first use.
-    @Volatile private var concurrentCaps: ConcurrentCameraCapabilities? = null
+    // Standalone two-Camera2-device dual path. Caps are read once on a background thread in init;
+    // the session is built lazily on first use. [dualScene] remembers the live dual layout so a
+    // setScene during dual re-applies the user's CURRENT PiP position/size on a re-enter.
+    private val _capabilities = MutableStateFlow<ConcurrentCameraCapabilities?>(null)
+    /** What dual-camera framing this device can do (certified concurrent combos). Read once async at
+     *  init; null until the background read completes. The UI uses it to classify lens chips. */
+    val capabilities: StateFlow<ConcurrentCameraCapabilities?> = _capabilities.asStateFlow()
     private var dualSession: DualCameraSession? = null
+    private var dualScene: com.example.plohoystream.camera.scene.Scene? = null
+    // The facing currently routed to the PRIMARY (big) view in dual; null when not in dual.
+    private var dualPrimaryFacing: Facing? = null
+    // The back lens currently bound as the dual back source (for classifying chip taps). Defaults to
+    // the 1x main; updated on a REAL switchBack.
+    private var dualBackLens: BackLens? = null
+
+    /** Invoked when a dual lens chip is UNAVAILABLE on this hardware (wider than the open sensor and
+     *  not concurrent with the front). The UI's confirm-exit-dual dialog (Task 7) handles it. */
+    var onExitDualRequested: (BackLens) -> Unit = {}
 
     init {
         registry.currentState = Lifecycle.State.CREATED
@@ -116,11 +123,10 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         processor.onLuma = { luma -> mainExecutor.execute { onMeteredLuma(luma) } }
         // Secondary PiP aspect (GL thread) → publish on main for the viewfinder to size the PiP box.
         processor.onSecondaryAspect = { aspect -> mainExecutor.execute { _secondaryPipAspect.value = aspect } }
-        // TEMP (Task 4 verification; replaced in Task 6): read concurrent-camera caps off the main
-        // thread so startDual2 can build a DualCameraSession lazily.
+        // Read concurrent-camera caps off the main thread so enterDual can build a DualCameraSession.
         Thread {
             runCatching { CameraCapabilityReader.read(appContext) }
-                .onSuccess { concurrentCaps = it }
+                .onSuccess { _capabilities.value = it }
                 .onFailure { Log.w(TAG, "concurrent caps read failed", it) }
         }.start()
         val future = ProcessCameraProvider.getInstance(appContext)
@@ -149,22 +155,19 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     /** Start a freeze-blur transition in the GL pipeline (covers preview AND the encoded stream). */
     fun beginCameraTransition() = processor.beginTransition()
 
-    /** Switch to a back/front camera sensor (ultrawide/main/tele) by its Camera2 id; rebinds. In
-     *  dual mode this re-binds the CONCURRENT PAIR (primary = the chosen sensor) so the PiP survives;
-     *  in single mode it rebinds the one camera. */
+    /** Switch to a back/front camera sensor (ultrawide/main/tele) by its Camera2 id; rebinds the
+     *  single camera. (Dual-mode lens switches go through [dualSelectChip].) */
     fun selectLens(physicalId: String?) {
         mainExecutor.execute {
             if (_selectedPhysicalId.value == physicalId) return@execute
             _selectedPhysicalId.value = physicalId
             currentZoom = 1.0f   // start at the lens's native field of view
-            if (dualPrimaryFacing != null) bindDualInternal() else bindIfReady()
+            bindIfReady()
         }
     }
 
     override fun start(config: CameraConfig, targets: List<Surface>, hdr: Boolean) {
         mainExecutor.execute {
-            dualPrimaryFacing = null   // single bind: leave dual mode (selectLens uses the single path)
-            dualScene = null
             // A facing change has different physical lenses and a fresh exposure context.
             if (lastConfig?.facing != config.facing) {
                 _selectedPhysicalId.value = null
@@ -197,8 +200,9 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             lastTargets = emptyList()
             dualPrimaryFacing = null
             dualScene = null
+            dualBackLens = null
             camera = null
-            // TEMP (Task 4 verification; replaced in Task 6): tear down the standalone dual session.
+            // Tear down the standalone dual session (no-op if not in dual).
             dualSession?.stop()
             provider?.unbindAll()
             processor.setEncoderSurface(null)
@@ -214,46 +218,23 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     }
 
     /**
-     * Bind FRONT + BACK concurrently, both feeding the shared [processor]. [primaryFacing] takes the
-     * high-res slot (the big view); the other is the PiP. [scene] is the composited layout. We read
-     * the SECONDARY camera's sensor orientation here so its PiP transform is derived correctly. Calls
-     * [onFailed] on a rejected concurrent bind (caller reverts to single mode).
+     * Enter dual (PiP) mode: unbind any CameraX session, then open the BACK + FRONT cameras as two
+     * independent Camera2 devices via [DualCameraSession], routing the device whose facing matches
+     * [primaryFacing] to the big view and the other to the PiP. [preview] is the on-screen surface,
+     * [encoder] the (non-preview) stream target; both are composited by the processor's standalone
+     * mode. [onFailed] fires (caller reverts to single) if caps aren't ready, the ids can't be
+     * resolved, or a device open/configure fails.
      */
-    fun startDual(
+    fun enterDual(
         primaryFacing: Facing,
         scene: com.example.plohoystream.camera.scene.Scene,
-        targets: List<Surface>,
-        onFailed: () -> Unit,
-    ) {
-        mainExecutor.execute {
-            // A primary-facing change (a dual swap) has different physical lenses, so drop any
-            // selected sensor — the new primary binds to its facing default.
-            if (dualPrimaryFacing != primaryFacing) _selectedPhysicalId.value = null
-            dualPrimaryFacing = primaryFacing
-            dualScene = scene
-            dualOnFailed = onFailed
-            lastTargets = targets
-            bindDualInternal()
-        }
-    }
-
-    /**
-     * TEMP (Task 4 verification; replaced in Task 6): start the standalone two-Camera2-device dual
-     * path. Unbinds any CameraX session, picks the default back + front camera ids, and hands the
-     * preview + encoder surfaces to a [DualCameraSession] feeding the processor's standalone mode.
-     * [onFailed] fires (caller reverts to single) if caps aren't ready, the ids can't be resolved,
-     * or a device open/configure fails.
-     */
-    fun startDual2(
-        primaryFacing: Facing,
         preview: Surface?,
         encoder: Surface?,
-        scene: com.example.plohoystream.camera.scene.Scene,
         onFailed: () -> Unit,
     ) {
         mainExecutor.execute {
-            val caps = concurrentCaps ?: run {
-                Log.w(TAG, "startDual2: concurrent caps not ready yet")
+            val caps = _capabilities.value ?: run {
+                Log.w(TAG, "enterDual: concurrent caps not ready yet")
                 onFailed(); return@execute
             }
             val mgr = runCatching {
@@ -263,7 +244,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             val backId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_BACK) }
             val frontId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_FRONT) }
             if (backId == null || frontId == null) {
-                Log.w(TAG, "startDual2: could not resolve default back/front ids (back=$backId front=$frontId)")
+                Log.w(TAG, "enterDual: could not resolve default back/front ids (back=$backId front=$frontId)")
                 onFailed(); return@execute
             }
             // Release any CameraX binding first; the processor's standalone mode owns the surfaces.
@@ -271,6 +252,9 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             camera = null
             dualPrimaryFacing = primaryFacing
             dualScene = scene
+            // The dual back source starts on the default-back lens (the 1x main).
+            dualBackLens = caps.backLenses.firstOrNull { it.id == backId }
+                ?: caps.backLenses.minByOrNull { kotlin.math.abs(it.ratio - 1f) }
             val session = dualSession ?: DualCameraSession(appContext, processor, caps).also { dualSession = it }
             // unbindAll() closes the prior CameraX session ASYNCHRONOUSLY; opening the two Camera2
             // devices before that finishes races CAMERA_IN_USE → onFailed → dual turns off. Gate the
@@ -290,79 +274,70 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         }
     }
 
-    /**
-     * (Re)bind the FRONT+BACK concurrent pair from the stored dual state. The PRIMARY (big view)
-     * binds to the currently-selected physical lens ([_selectedPhysicalId]) so a lens switch in dual
-     * mode rebinds the PAIR without ever dropping the PiP. The concurrent primary [Camera] is adopted
-     * as [camera] so zoom/exposure target the big view. If a bind with a specific lens fails (the
-     * device may not support that sensor concurrently with the front camera) we revert to the default
-     * lens and retry once — keeping dual alive — before finally falling back to single via
-     * [dualOnFailed]. Main-thread only.
-     */
-    private fun bindDualInternal(lensFallback: Boolean = true) {
-        val provider = provider ?: run { dualOnFailed(); return }
-        val primaryFacing = dualPrimaryFacing ?: return
-        val scene = dualScene ?: return
-        val encoder = lastTargets.firstOrNull { it !== previewSurface }
-        processor.setEncoderSurface(encoder)
-        val secondaryFacing = if (primaryFacing == Facing.FRONT) Facing.BACK else Facing.FRONT
-        val mgr = runCatching {
-            appContext.getSystemService(android.content.Context.CAMERA_SERVICE)
-                as android.hardware.camera2.CameraManager
-        }.getOrNull()
-        val secId = mgr?.let {
-            defaultCameraId(it, if (secondaryFacing == Facing.FRONT)
-                CameraMetadata.LENS_FACING_FRONT else CameraMetadata.LENS_FACING_BACK)
+    /** Leave dual mode: tear down the dual session. The single rebind happens via the single
+     *  [start] path the Viewfinder calls when dualOn flips false. */
+    fun exitDual() {
+        mainExecutor.execute {
+            dualSession?.stop()
+            dualPrimaryFacing = null
+            dualScene = null
+            dualBackLens = null
         }
-        val sensorDeg = secId?.let {
-            runCatching {
-                mgr.getCameraCharacteristics(it).get(CameraCharacteristics.SENSOR_ORIENTATION)
+    }
+
+    /** Instant dual swap (no device/session reopen): relabel which open camera is the big view. */
+    fun dualSwap(primaryFacing: Facing) {
+        mainExecutor.execute {
+            dualPrimaryFacing = primaryFacing
+            dualSession?.swapPrimary(primaryFacing)
+        }
+    }
+
+    /** Digital zoom on the dual back device (no reopen). */
+    fun dualSetZoom(ratio: Float) {
+        mainExecutor.execute { dualSession?.setZoom(ratio) }
+    }
+
+    /**
+     * Route a back-lens chip tap while dual is on. Classifies [chip] against the currently-open back
+     * lens ([dualBackLens]) and the default front:
+     *  - REAL → switch the back sensor blink-free ([DualCameraSession.switchBack]); updates the
+     *    remembered open-back lens.
+     *  - ZOOM → reach the chip's framing by digital-zooming the open sensor.
+     *  - UNAVAILABLE → invoke [onExitDualRequested] (UI confirms exit-to-single in Task 7).
+     */
+    fun dualSelectChip(chip: BackLens) {
+        mainExecutor.execute {
+            val caps = _capabilities.value ?: return@execute
+            val mgr = runCatching {
+                appContext.getSystemService(android.content.Context.CAMERA_SERVICE)
+                    as android.hardware.camera2.CameraManager
             }.getOrNull()
-        } ?: 0
-        processor.setDualConfig(sensorDeg, secondaryFacing == Facing.FRONT, displayDegrees())
-        processor.setScene(scene)
-        runCatching { provider.unbindAll() }
-        // unbindAll() closes the prior session's camera ASYNCHRONOUSLY. Opening the concurrent
-        // pair before that close finishes throws ERROR_CAMERA_LIMIT_EXCEEDED (the front camera
-        // never opens → frozen feed on a re-toggle). Gate the bind on both cameras being free.
-        awaitCamerasFreeThenBind {
-            val lensId = _selectedPhysicalId.value
-            // PRIMARY binds to the selected physical sensor; SECONDARY (PiP) stays the facing default.
-            val primaryCfg = singleConfig(primaryFacing, Size(1280, 720), primary = true, physicalId = lensId)
-            val secondaryCfg = singleConfig(secondaryFacing, Size(640, 360), primary = false)
-            registry.currentState = Lifecycle.State.STARTED
-            try {
-                val cc = provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
-                // Adopt the primary (big view) camera so zoom/exposure act on it, not the PiP.
-                camera = cc.cameras.firstOrNull { matchesFacing(it, primaryFacing) } ?: cc.cameras.firstOrNull()
-                adoptRealZoomRange()
-                camera?.cameraControl?.setZoomRatio(currentZoom)
-                Log.i(TAG, "bound dual: primary=$primaryFacing lens=$lensId secondarySensor=$sensorDeg")
-            } catch (e: Exception) {
-                if (lensId != null && lensFallback) {
-                    // This sensor can't be bound concurrently with the front camera on this device:
-                    // keep dual alive by reverting to the default lens and rebinding once.
-                    Log.w(TAG, "dual bind with lens $lensId failed; reverting to default lens", e)
-                    _selectedPhysicalId.value = null
-                    bindDualInternal(lensFallback = false)
-                } else {
-                    Log.e(TAG, "concurrent bind failed; caller falls back to single", e)
-                    processor.setScene(com.example.plohoystream.camera.scene.Scene.SINGLE)
-                    dualOnFailed()
+            val frontId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_FRONT) } ?: return@execute
+            val openBack = dualBackLens ?: caps.backLenses.minByOrNull { kotlin.math.abs(it.ratio - 1f) }
+                ?: return@execute
+            when (caps.dualClass(chip, openBack, frontId)) {
+                DualClass.REAL -> {
+                    dualBackLens = chip
+                    dualSession?.switchBack(chip.id)
+                }
+                DualClass.ZOOM -> dualSession?.setZoom(chip.ratio)
+                DualClass.UNAVAILABLE -> {
+                    Log.i(TAG, "dualSelectChip UNAVAILABLE chip=${chip.id}@${chip.ratio}; requesting exit-dual")
+                    onExitDualRequested(chip)
                 }
             }
         }
     }
 
-    /** True if [cam]'s lens facing matches [facing] (to pick the primary out of a ConcurrentCamera). */
-    private fun matchesFacing(cam: Camera, facing: Facing): Boolean {
-        val want = if (facing == Facing.FRONT) CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
-        return runCatching { cam.cameraInfo.lensFacing }.getOrNull() == want
+    /** Forward a new preview [surface] (null = drop preview) to the dual compositor (background/resume). */
+    fun setDualPreview(surface: Surface?) {
+        mainExecutor.execute { dualSession?.setPreview(surface) }
     }
 
     /** Push a new composited scene to the GL pipeline (live PiP move/resize). Also remembers the
-     *  latest dual layout so a dual rebind (a lens switch) re-applies the user's CURRENT PiP
-     *  position/size/aspect rather than the default layout captured at [startDual]. */
+     *  latest dual layout so a dual re-enter (resume) re-applies the user's CURRENT PiP
+     *  position/size/aspect rather than the default layout captured at [enterDual]. */
     fun setScene(scene: com.example.plohoystream.camera.scene.Scene) {
         if (scene.isDual) dualScene = scene
         processor.setScene(scene)
@@ -410,46 +385,6 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
                 mgr.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == lensFacing
             }
         }.getOrNull()
-
-    private fun singleConfig(
-        facing: Facing,
-        size: Size,
-        primary: Boolean,
-        physicalId: String? = null,
-    ): androidx.camera.core.ConcurrentCamera.SingleCameraConfig {
-        val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
-            .setResolutionStrategy(
-                androidx.camera.core.resolutionselector.ResolutionStrategy(
-                    size,
-                    androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
-                ),
-            ).build()
-        // PRIMARY: routes through the GL effect to the on-screen preview + encoder (and composites).
-        // SECONDARY: no effect — feeds straight into the renderer's 2nd texture via the processor's
-        // secondary sink, so the PiP camera actually streams frames (a Preview with no consumer never
-        // starts its capture stream).
-        val preview = Preview.Builder().setResolutionSelector(resolutionSelector).build().apply {
-            if (primary) setSurfaceProvider(mainExecutor, UiSurfaceProvider())
-            else setSurfaceProvider(mainExecutor, Preview.SurfaceProvider { req -> processor.provideSecondarySurface(req) })
-        }
-        val useCaseGroup = androidx.camera.core.UseCaseGroup.Builder()
-            .addUseCase(preview)
-            .apply {
-                if (primary) {
-                    addEffect(EgressEffect(processor, mainExecutor))
-                    // Concurrent mode hands the primary a 4:3 buffer; crop it to the 16:9 output so it
-                    // isn't stretched (vertically squeezed) when drawn full-frame. The ViewPort aspect
-                    // must be expressed in the CURRENT display rotation, else the crop is applied on
-                    // the wrong axis (this app runs landscape).
-                    setViewPort(androidx.camera.core.ViewPort.Builder(android.util.Rational(16, 9), displayRotation()).build())
-                }
-            }
-            .build()
-        // Narrow to the requested physical sensor when one is selected (a lens switch on the primary);
-        // [lensSelector] falls back to the facing default for a null/unknown id.
-        val selector = lensSelector(facing, physicalId)
-        return androidx.camera.core.ConcurrentCamera.SingleCameraConfig(selector, useCaseGroup, this)
-    }
 
     @Suppress("DEPRECATION")
     private fun displayRotation(): Int = try {

@@ -100,6 +100,10 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val pipAspect by pipAspectFlow.collectAsStateWithLifecycle()
     var scene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.SINGLE) }
     val dualOn = scene.isDual
+    // Which facing is the PRIMARY (big) view in dual. Tracked SEPARATELY from [facing] so a dual swap
+    // can flip it WITHOUT changing [facing] (which would recompute [config] and re-run the binding
+    // LaunchedEffect → a full dual reopen). The swap is instant (relabel only) via cx.dualSwap.
+    var dualPrimary by remember { mutableStateOf(Facing.BACK) }
     // Remember the dual layout so toggling dual off then on restores the user's PiP position/size
     // rather than snapping back to the default corner.
     var lastDualScene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.dual()) }
@@ -115,7 +119,8 @@ fun Viewfinder(viewModel: StreamViewModel) {
     }
     fun applyZoom(target: Float) {
         zoom = target.coerceIn(zoomRange.start, zoomRange.endInclusive)
-        controller.setZoom(zoom)
+        val cx = controller as? CameraXController
+        if (dualOn && cx != null) cx.dualSetZoom(zoom) else controller.setZoom(zoom)
         zoomNonce++
     }
 
@@ -175,20 +180,21 @@ fun Viewfinder(viewModel: StreamViewModel) {
         } else {
             val cx = controller as? CameraXController
             if (dualOn && cx != null) {
-                // TEMP (Task 4 verification; replaced in Task 6): route dual-ON to the standalone
-                // two-Camera2-device path. preview = the on-screen surface; encoder = the non-preview
-                // target. The old startDual (CameraX concurrent bind) is kept but unused; Task 6
-                // removes it.
+                // Dual ON: open both cameras via DualCameraSession. preview = the on-screen surface;
+                // encoder = the non-preview target. primaryFacing is [dualPrimary] (NOT [facing]) so a
+                // swap can flip the big view without re-running this binder.
                 val previewTarget = surface
                 val encoderTarget = targets.firstOrNull { it !== previewTarget }
-                cx.startDual2(
-                    primaryFacing = facing,
+                cx.enterDual(
+                    primaryFacing = dualPrimary,
+                    scene = scene,
                     preview = previewTarget,
                     encoder = encoderTarget,
-                    scene = scene,
                     onFailed = { scene = com.example.plohoystream.camera.scene.Scene.SINGLE },
                 )
             } else {
+                // Dual OFF (or no CameraXController): tear down any dual session first, then bind single.
+                cx?.exitDual()
                 controller.start(c, targets, hdr = activeHdr)
                 controller.setZoom(zoom)
             }
@@ -223,6 +229,7 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val currentZoom by rememberUpdatedState(zoom)
     val currentDualOn by rememberUpdatedState(dualOn)
     val currentFacing by rememberUpdatedState(facing)
+    val currentDualPrimary by rememberUpdatedState(dualPrimary)
     val currentScene by rememberUpdatedState(scene)
     var resumed by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -236,15 +243,15 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     if (c != null && targets.isNotEmpty()) {
                         val cx = controller as? CameraXController
                         if (currentDualOn && cx != null) {
-                            // TEMP (Task 4 verification; replaced in Task 6): route resume's dual path
-                            // to the standalone two-Camera2-device path too.
+                            // Resume in dual: re-enter the standalone dual session (it stops itself
+                            // first if already started). primaryFacing tracks the dual swap state.
                             val previewTarget = currentSurface
                             val encoderTarget = targets.firstOrNull { it !== previewTarget }
-                            cx.startDual2(
-                                primaryFacing = currentFacing,
+                            cx.enterDual(
+                                primaryFacing = currentDualPrimary,
+                                scene = currentScene,
                                 preview = previewTarget,
                                 encoder = encoderTarget,
-                                scene = currentScene,
                                 onFailed = {},
                             )
                         } else {
@@ -269,17 +276,24 @@ fun Viewfinder(viewModel: StreamViewModel) {
 
     DisposableEffect(Unit) {
         onDispose {
+            val cx = controller as? CameraXController
             // Preview is going away: null the controller's preview surface so the CameraX backend
             // enters encoder-only (backgrounded) mode correctly — the encoder target is no longer
             // misclassified as the preview.
-            (controller as? CameraXController)?.setPreviewSurface(null)
-            // Detach preview only. If streaming, the camera must keep feeding the encoder, so
-            // reconfigure to whatever targets remain (encoder-only) rather than stopping. If
-            // idle (no encoder surface), stop the camera.
+            cx?.setPreviewSurface(null)
             val enc = encoderSurface
             val targets = CameraTargets.select<Surface>(null, enc)
-            if (targets.isEmpty()) controller.stop()
-            else config?.let { controller.start(it, targets, hdr = activeHdr) }
+            if (currentDualOn && cx != null) {
+                // In dual: drop the preview from the compositor but keep both cameras feeding the
+                // encoder if streaming; if idle (no encoder), tear the dual session down.
+                if (targets.isEmpty()) cx.exitDual() else cx.setDualPreview(null)
+            } else {
+                // Detach preview only. If streaming, the camera must keep feeding the encoder, so
+                // reconfigure to whatever targets remain (encoder-only) rather than stopping. If
+                // idle (no encoder surface), stop the camera.
+                if (targets.isEmpty()) controller.stop()
+                else config?.let { controller.start(it, targets, hdr = activeHdr) }
+            }
         }
     }
 
@@ -396,11 +410,14 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             scene = scene,
                             onSceneChange = { scene = it },
                             onSwap = {
-                                // Blur over the rebind, then flip which camera is the big (primary) view;
-                                // the binder (config depends on facing) rebinds dual with the high-res slot
-                                // following the new primary.
-                                (controller as? CameraXController)?.beginCameraTransition()
-                                facing = CameraControls.opposite(facing)
+                                // INSTANT swap (no device/session reopen): flip which open camera is the
+                                // big (primary) view. We flip the dedicated [dualPrimary] state — NOT
+                                // [facing] — so the binding LaunchedEffect (keyed on config←facing) does
+                                // not re-run and tear the dual session down. dualSwap just relabels the
+                                // processor's slot mapping; both textures already stream.
+                                val newPrimary = CameraControls.opposite(dualPrimary)
+                                dualPrimary = newPrimary
+                                (controller as? CameraXController)?.dualSwap(newPrimary)
                             },
                             modifier = Modifier
                                 .fillMaxSize()
@@ -437,9 +454,23 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
                             onSelectLens = { lens ->
-                                (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
-                                zoom = 1f
-                                (controller as? CameraXController)?.selectLens(lens.physicalId)
+                                val cx = controller as? CameraXController
+                                if (dualOn && cx != null) {
+                                    // Dual: route through the chip classifier (REAL switchBack / ZOOM /
+                                    // UNAVAILABLE → exit-dual request). Map the LensOption to a BackLens,
+                                    // preferring the capability-derived entry (real zoom bounds) by id.
+                                    val chip = cx.capabilities.value
+                                        ?.backLenses?.firstOrNull { it.id == lens.physicalId }
+                                        ?: com.example.plohoystream.camera.BackLens(
+                                            id = lens.physicalId, ratio = lens.zoomRatio,
+                                            minZoom = 1f, maxZoom = 1f,
+                                        )
+                                    cx.dualSelectChip(chip)
+                                } else {
+                                    cx?.beginCameraTransition()  // stream freeze-blur
+                                    zoom = 1f
+                                    cx?.selectLens(lens.physicalId)
+                                }
                             },
                             onGoLive = viewModel::goLive,
                             onStop = viewModel::stop,
