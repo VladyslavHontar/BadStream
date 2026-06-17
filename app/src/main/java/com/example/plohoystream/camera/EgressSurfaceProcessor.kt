@@ -35,6 +35,12 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         const val TAG = "EgressSurfaceProcessor"
         const val METER_EVERY = 6   // sample luma every Nth frame (~5Hz at 30fps) for Auto-ISO
         const val PIP_CORNER_RADIUS = 0.18f   // PiP rounded-corner radius, in half-height units
+        // Bounded wait for CameraX to release the preview Surface's producer slot before standalone
+        // connects. Re-checked on the GL handler every STEP; after BUDGET we attach anyway (the
+        // unregister-then-register in attachStandalonePreview is the fallback that frees any stale
+        // producer connection the renderer itself still holds).
+        const val PREVIEW_HANDOFF_BUDGET_MS = 500L
+        const val PREVIEW_HANDOFF_STEP_MS = 25L
     }
 
     // Scene compositor state. The scene (single source of truth for preview + stream) and the
@@ -94,6 +100,13 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     /** Suspend/resume the SINGLE-mode render path for the duration of a single->dual transition.
      *  @Volatile; set directly (read on the GL thread). */
     fun setEnteringDual(v: Boolean) { enteringDual = v }
+    // True while a CameraX preview SurfaceOutput is registered (i.e. CameraX still holds the on-screen
+    // Surface's BufferQueue producer slot). startStandaloneDual waits (briefly) for this to clear
+    // before it connects standalone's own EGL window surface to that SAME Surface — connecting a
+    // second producer while CameraX's is still attached makes eglCreateWindowSurface fail with
+    // EGL_BAD_ALLOC. Set in onOutputSurface's register/close on the GL thread; @Volatile so the
+    // bounded re-check in startStandaloneDual sees the latest value.
+    @Volatile private var previewOutputHeld = false
     // Instant camera swap (standalone only): which scene source maps to which input slot. When false
     // PRIMARY→slotA(texture)/SECONDARY→slotB(texture2); when true the two are swapped. Both textures
     // stream regardless, so flipping this is instant (no device/session reopen). GL-thread mutation.
@@ -287,10 +300,16 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 // preview). The renderer reuses the live EGL surface when the same Surface
                 // re-registers, and GCs surfaces whose Surface became invalid (or on release).
                 val removed = outputSurfaces.remove(output)
+                // CameraX has released the preview output (and thus its producer connection to the
+                // on-screen Surface's BufferQueue). Standalone may now connect safely (see the
+                // previewOutputHeld barrier in startStandaloneDual).
+                previewOutputHeld = false
                 Log.d(TAG, "output closed surface=${removed?.hashCode()} (EGL kept; remaining=${outputSurfaces.size})")
             }
             renderer.registerOutputSurface(surface)
             outputSurfaces[output] = surface
+            // CameraX now holds this on-screen Surface's BufferQueue producer slot.
+            previewOutputHeld = true
         }, output::close)
     }
 
@@ -506,10 +525,19 @@ class EgressSurfaceProcessor : SurfaceProcessor {
 
             standalonePreview = null
             standaloneOutputs.clear()
+            // Connect standalone's preview output to the on-screen Surface ONLY after CameraX has
+            // released its producer slot on that same Surface (single mode's preview SurfaceOutput).
+            // The on-screen preview is ONE Surface backed by ONE BufferQueue with ONE producer slot;
+            // attaching standalone's EGL window surface while CameraX is still connected makes
+            // eglCreateWindowSurface fail with EGL_BAD_ALLOC. We DEFER the preview registration on the
+            // GL handler until previewOutputHeld clears (bounded), so the input Surfaces below return
+            // immediately and the encoder/standalone composite can start streaming a moment before the
+            // preview attaches. attachStandalonePreview() also does an explicit unregister-then-register
+            // (defect A) to deterministically free the renderer's OWN kept-alive EGL window surface for
+            // this exact Surface — this makes back-main and front/tele entries behave identically and
+            // serves as the fallback if the barrier budget expires.
             if (preview != null) {
-                renderer.registerOutputSurface(preview)
-                standaloneOutputs.add(preview)
-                standalonePreview = preview
+                schedulePreviewAttach(preview, 0)
             }
             // The encoder is MODE-AGNOSTIC: it is owned solely by [encoderSurface]/[setEncoderSurface]
             // and is NOT tracked in standaloneOutputs. We're already on the GL thread, so inline the
@@ -536,6 +564,46 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             result = DualInputs(primarySfc, secondarySfc)
         }
         return result!!
+    }
+
+    /**
+     * Defer-and-attach the standalone preview to [preview] once CameraX has released its producer slot
+     * on that Surface ([previewOutputHeld] == false), or after the [PREVIEW_HANDOFF_BUDGET_MS] budget.
+     * Re-posts itself on the GL handler every [PREVIEW_HANDOFF_STEP_MS] (never busy-spins the GL
+     * thread). [waitedMs] accumulates the elapsed wait. No-op if standalone was torn down meanwhile or
+     * the preview target was swapped out from under us.
+     */
+    private fun schedulePreviewAttach(preview: Surface, waitedMs: Long) {
+        if (isReleaseRequested.get() || !standalone) return
+        // The preview target may have been changed (setStandalonePreview) or dropped before we
+        // attached; only the most-recent intended preview should win. We re-check below after attach.
+        if (previewOutputHeld && waitedMs < PREVIEW_HANDOFF_BUDGET_MS) {
+            glHandler.postDelayed(
+                { schedulePreviewAttach(preview, waitedMs + PREVIEW_HANDOFF_STEP_MS) },
+                PREVIEW_HANDOFF_STEP_MS,
+            )
+            return
+        }
+        attachStandalonePreview(preview, waitedMs)
+    }
+
+    /** Register [preview] as the standalone preview output, doing an explicit unregister-then-register
+     *  (defect A) to free the renderer's kept-alive EGL window surface for this exact Surface before
+     *  the first standalone composite recreates it. On the GL thread. */
+    private fun attachStandalonePreview(preview: Surface, waitedMs: Long) {
+        if (isReleaseRequested.get() || !standalone) return
+        if (standalonePreview === preview) return   // already attached (idempotent)
+        // A setStandalonePreview() during the deferred wait already claimed the slot with a different
+        // (or null) surface; don't clobber it with this stale attach.
+        if (standalonePreview != null) return
+        Log.d(TAG, "standalone preview attach (heldCleared=${!previewOutputHeld} waited=${waitedMs}ms)")
+        // (A) Destroy any kept-alive EGL window surface the renderer still holds for THIS Surface, then
+        // re-register (lazy: recreated on the first standalone render). Frees the renderer's own
+        // producer connection so single->dual is deterministic for back-main AND front/tele.
+        renderer.unregisterOutputSurface(preview)
+        renderer.registerOutputSurface(preview)
+        standaloneOutputs.add(preview)
+        standalonePreview = preview
     }
 
     /** Swap the standalone preview target (null = drop preview, encoder-only). On the GL thread. */

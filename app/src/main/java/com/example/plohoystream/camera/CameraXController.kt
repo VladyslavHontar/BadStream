@@ -266,6 +266,18 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             dualBackLens = caps.backLenses.firstOrNull { it.id == backId }
                 ?: caps.backLenses.minByOrNull { kotlin.math.abs(it.ratio - 1f) }
             val session = dualSession ?: DualCameraSession(appContext, processor, caps).also { dualSession = it }
+            // (Defect B) On ANY failure path, tear down the standalone/dual state BEFORE the caller
+            // reverts to single. The caller's onFailed flips scene=SINGLE which rebinds CameraX; if
+            // standalone's preview EGL window surface still held the on-screen Surface's BufferQueue
+            // producer slot, CameraX's rebound preview SurfaceOutput would hit EGL_BAD_ALLOC. session
+            // .stop() calls processor.stopStandalone() (which unregisters the standalone preview) and is
+            // idempotent via its `started` guard, so the double stop on the internal fail() path is safe.
+            val safeOnFailed = {
+                mainExecutor.execute {
+                    dualSession?.stop()
+                    onFailed()
+                }
+            }
             // unbindAll() closes the prior CameraX session ASYNCHRONOUSLY; opening the two Camera2
             // devices before that finishes races CAMERA_IN_USE → onFailed → dual turns off. Gate the
             // session start on both default cameras being free (or a 2s timeout).
@@ -278,7 +290,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
                     encoder = encoder,
                     displayDeg = displayDegrees(),
                     scene = scene,
-                    onFailed = { mainExecutor.execute { onFailed() } },
+                    onFailed = safeOnFailed,
                 )
             }
         }
