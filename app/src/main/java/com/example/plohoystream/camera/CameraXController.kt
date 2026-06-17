@@ -105,12 +105,24 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     private var dualScene: com.example.plohoystream.camera.scene.Scene? = null
     private var dualOnFailed: () -> Unit = {}
 
+    // TEMP (Task 4 verification; replaced in Task 6): standalone two-Camera2-device dual path.
+    // Caps are read once on a background thread in init; the session is built lazily on first use.
+    @Volatile private var concurrentCaps: ConcurrentCameraCapabilities? = null
+    private var dualSession: DualCameraSession? = null
+
     init {
         registry.currentState = Lifecycle.State.CREATED
         // Auto-ISO: the GL meter (GL thread) hands us scene luma; run the control law on main.
         processor.onLuma = { luma -> mainExecutor.execute { onMeteredLuma(luma) } }
         // Secondary PiP aspect (GL thread) → publish on main for the viewfinder to size the PiP box.
         processor.onSecondaryAspect = { aspect -> mainExecutor.execute { _secondaryPipAspect.value = aspect } }
+        // TEMP (Task 4 verification; replaced in Task 6): read concurrent-camera caps off the main
+        // thread so startDual2 can build a DualCameraSession lazily.
+        Thread {
+            runCatching { CameraCapabilityReader.read(appContext) }
+                .onSuccess { concurrentCaps = it }
+                .onFailure { Log.w(TAG, "concurrent caps read failed", it) }
+        }.start()
         val future = ProcessCameraProvider.getInstance(appContext)
         future.addListener({
             try {
@@ -186,6 +198,8 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             dualPrimaryFacing = null
             dualScene = null
             camera = null
+            // TEMP (Task 4 verification; replaced in Task 6): tear down the standalone dual session.
+            dualSession?.stop()
             provider?.unbindAll()
             processor.setEncoderSurface(null)
             registry.currentState = Lifecycle.State.CREATED
@@ -220,6 +234,54 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             dualOnFailed = onFailed
             lastTargets = targets
             bindDualInternal()
+        }
+    }
+
+    /**
+     * TEMP (Task 4 verification; replaced in Task 6): start the standalone two-Camera2-device dual
+     * path. Unbinds any CameraX session, picks the default back + front camera ids, and hands the
+     * preview + encoder surfaces to a [DualCameraSession] feeding the processor's standalone mode.
+     * [onFailed] fires (caller reverts to single) if caps aren't ready, the ids can't be resolved,
+     * or a device open/configure fails.
+     */
+    fun startDual2(
+        primaryFacing: Facing,
+        preview: Surface?,
+        encoder: Surface?,
+        scene: com.example.plohoystream.camera.scene.Scene,
+        onFailed: () -> Unit,
+    ) {
+        mainExecutor.execute {
+            val caps = concurrentCaps ?: run {
+                Log.w(TAG, "startDual2: concurrent caps not ready yet")
+                onFailed(); return@execute
+            }
+            val mgr = runCatching {
+                appContext.getSystemService(android.content.Context.CAMERA_SERVICE)
+                    as android.hardware.camera2.CameraManager
+            }.getOrNull()
+            val backId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_BACK) }
+            val frontId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_FRONT) }
+            if (backId == null || frontId == null) {
+                Log.w(TAG, "startDual2: could not resolve default back/front ids (back=$backId front=$frontId)")
+                onFailed(); return@execute
+            }
+            // Release any CameraX binding first; the processor's standalone mode owns the surfaces.
+            runCatching { provider?.unbindAll() }
+            camera = null
+            dualPrimaryFacing = primaryFacing
+            dualScene = scene
+            val session = dualSession ?: DualCameraSession(appContext, processor, caps).also { dualSession = it }
+            session.start(
+                primaryFacing = primaryFacing,
+                backId = backId,
+                frontId = frontId,
+                preview = preview,
+                encoder = encoder,
+                displayDeg = displayDegrees(),
+                scene = scene,
+                onFailed = { mainExecutor.execute { onFailed() } },
+            )
         }
     }
 

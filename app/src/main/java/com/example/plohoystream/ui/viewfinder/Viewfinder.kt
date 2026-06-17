@@ -175,8 +175,17 @@ fun Viewfinder(viewModel: StreamViewModel) {
         } else {
             val cx = controller as? CameraXController
             if (dualOn && cx != null) {
-                cx.startDual(
-                    primaryFacing = facing, scene = scene, targets = targets,
+                // TEMP (Task 4 verification; replaced in Task 6): route dual-ON to the standalone
+                // two-Camera2-device path. preview = the on-screen surface; encoder = the non-preview
+                // target. The old startDual (CameraX concurrent bind) is kept but unused; Task 6
+                // removes it.
+                val previewTarget = surface
+                val encoderTarget = targets.firstOrNull { it !== previewTarget }
+                cx.startDual2(
+                    primaryFacing = facing,
+                    preview = previewTarget,
+                    encoder = encoderTarget,
+                    scene = scene,
                     onFailed = { scene = com.example.plohoystream.camera.scene.Scene.SINGLE },
                 )
             } else {
@@ -227,7 +236,17 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     if (c != null && targets.isNotEmpty()) {
                         val cx = controller as? CameraXController
                         if (currentDualOn && cx != null) {
-                            cx.startDual(primaryFacing = currentFacing, scene = currentScene, targets = targets, onFailed = {})
+                            // TEMP (Task 4 verification; replaced in Task 6): route resume's dual path
+                            // to the standalone two-Camera2-device path too.
+                            val previewTarget = currentSurface
+                            val encoderTarget = targets.firstOrNull { it !== previewTarget }
+                            cx.startDual2(
+                                primaryFacing = currentFacing,
+                                preview = previewTarget,
+                                encoder = encoderTarget,
+                                scene = currentScene,
+                                onFailed = {},
+                            )
                         } else {
                             controller.start(c, targets, hdr = currentHdr)
                             controller.setZoom(currentZoom)
