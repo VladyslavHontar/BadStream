@@ -84,6 +84,16 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     // fed by two independent Camera2 devices. The PRIMARY layer is then oriented with DisplayTransform
     // (like the SECONDARY), since neither source goes through CameraX's display-correcting transform.
     @Volatile private var standalone = false
+    // Single->dual transition gate. While true, the SINGLE-mode (CameraX) render path is INERT: it
+    // renders nothing so it can't (re)create an EGL window surface on a preview SurfaceOutput that
+    // CameraX is mid-teardown of during dual entry (→ EGL_BAD_ALLOC, PiP flash). Set true at the
+    // start of enterDual, cleared when standalone takes over (startStandaloneDual) or single
+    // (re)binds (onInputSurface/start) after a successful or failed dual entry.
+    @Volatile private var enteringDual = false
+
+    /** Suspend/resume the SINGLE-mode render path for the duration of a single->dual transition.
+     *  @Volatile; set directly (read on the GL thread). */
+    fun setEnteringDual(v: Boolean) { enteringDual = v }
     // Instant camera swap (standalone only): which scene source maps to which input slot. When false
     // PRIMARY→slotA(texture)/SECONDARY→slotB(texture2); when true the two are swapped. Both textures
     // stream regardless, so flipping this is instant (no device/session reopen). GL-thread mutation.
@@ -187,6 +197,9 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             return
         }
         executeSafely({
+            // A new primary SurfaceTexture for the single (CameraX) path: dual entry either never
+            // happened or FAILED and we're falling back to single — resume single rendering.
+            enteringDual = false
             inputSurfaceCount++
             Log.i(TAG, "onInputSurface #$inputSurfaceCount res=${request.resolution.width}x${request.resolution.height} dual=$dualMode")
             // Only the PRIMARY camera flows through the effect/onInputSurface. The SECONDARY (PiP)
@@ -315,6 +328,11 @@ class EgressSurfaceProcessor : SurfaceProcessor {
 
     private fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
         if (isReleaseRequested.get()) return
+        // A single->dual transition is in progress: render nothing on the single path. CameraX is
+        // tearing down this preview SurfaceOutput's BufferQueue; calling render() here would try to
+        // (re)create an EGL window surface on that mid-teardown queue → EGL_BAD_ALLOC. The standalone
+        // path takes over (clearing this) once dual is up; a failed entry rebinds single and clears it.
+        if (enteringDual) return
         // updateTexImage()/getTransformMatrix can fail natively when the camera producer is
         // disconnected mid-frame during a teardown — app backgrounded, screen rotation, or a camera
         // rebind — while this frame callback was already queued on the GL thread. That is a
@@ -505,6 +523,8 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             }
 
             standalone = true
+            // Standalone now owns rendering; the single->dual transition is over.
+            enteringDual = false
 
             primaryST.setOnFrameAvailableListener({ st -> onPrimaryFrame(st) }, glHandler)
             secondaryST.setOnFrameAvailableListener({ st -> onSecondaryFrame(st) }, glHandler)
