@@ -355,6 +355,7 @@ class GlRenderer {
         val texTransform: FloatArray,
         val left: Float, val top: Float, val right: Float, val bottom: Float,
         val cornerRadius: Float = 0f,   // rounded-rect radius in half-height units; 0 = square
+        val mirror: Boolean = false,    // horizontal flip about the layer's center (selfie mirror)
     )
 
     /** Composite [layers] (in order) into [surface]. Each layer is positioned by its rect and
@@ -398,6 +399,7 @@ class GlRenderer {
         // Normalized rect (origin top-left) -> NDC: x in [-1,1], y flipped (top-left -> +y up).
         Matrix.translateM(trans, 0, 2f * cx - 1f, 1f - 2f * cy, 0f)
         Matrix.scaleM(trans, 0, sx, sy, 1f)
+        if (layer.mirror) Matrix.scaleM(trans, 0, -1f, 1f, 1f)   // flip horizontally about the layer center
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, trans, 0)
         GLES20.glUniform1f(alphaScaleLoc, 1.0f)
         GLES20.glUniform1f(cornerRadiusLoc, layer.cornerRadius)

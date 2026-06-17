@@ -383,6 +383,7 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                         renderer.textureName2, tex,
                         layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
                         cornerRadius = PIP_CORNER_RADIUS,
+                        mirror = secondaryIsFront,   // selfie-mirror the front PiP; back stays un-mirrored
                     )
                 }
             }
