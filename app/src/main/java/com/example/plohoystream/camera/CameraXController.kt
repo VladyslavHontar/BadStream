@@ -272,16 +272,21 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             dualPrimaryFacing = primaryFacing
             dualScene = scene
             val session = dualSession ?: DualCameraSession(appContext, processor, caps).also { dualSession = it }
-            session.start(
-                primaryFacing = primaryFacing,
-                backId = backId,
-                frontId = frontId,
-                preview = preview,
-                encoder = encoder,
-                displayDeg = displayDegrees(),
-                scene = scene,
-                onFailed = { mainExecutor.execute { onFailed() } },
-            )
+            // unbindAll() closes the prior CameraX session ASYNCHRONOUSLY; opening the two Camera2
+            // devices before that finishes races CAMERA_IN_USE → onFailed → dual turns off. Gate the
+            // session start on both default cameras being free (or a 2s timeout).
+            awaitCamerasFreeThenBind {
+                session.start(
+                    primaryFacing = primaryFacing,
+                    backId = backId,
+                    frontId = frontId,
+                    preview = preview,
+                    encoder = encoder,
+                    displayDeg = displayDegrees(),
+                    scene = scene,
+                    onFailed = { mainExecutor.execute { onFailed() } },
+                )
+            }
         }
     }
 

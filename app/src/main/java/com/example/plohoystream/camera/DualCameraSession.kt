@@ -25,8 +25,9 @@ import com.example.plohoystream.camera.scene.Scene
  * and all StateCallback callbacks, so the two devices share one serialized control thread. The GL
  * compositing lives entirely inside the [processor].
  *
- * Capacity: per-camera capture sizes are kept at/below 720p (primary ~1280x720, secondary ~640x360)
- * to stay within the device's certified concurrent guarantee.
+ * Capacity: per-camera capture sizes are chosen from each sensor's supported sizes — the largest
+ * NATIVE-aspect size at/below 720p — to stay within the device's certified concurrent guarantee
+ * while preserving each sensor's true aspect (e.g. a 4:3 front sensor stays 4:3, not forced to 16:9).
  */
 class DualCameraSession(
     context: Context,
@@ -48,8 +49,8 @@ class DualCameraSession(
     private var frontSession: CameraCaptureSession? = null
 
     private var dualInputs: EgressSurfaceProcessor.DualInputs? = null
-    private var started = false
-    private var failedFired = false
+    @Volatile private var started = false
+    @Volatile private var failedFired = false
     private var onFailedCb: () -> Unit = {}
 
     /**
@@ -90,6 +91,13 @@ class DualCameraSession(
         val secondarySensorDeg = if (backIsPrimary) frontSensorDeg else backSensorDeg
         val secondaryIsFront = backIsPrimary
 
+        // Phone-agnostic capture sizes: pick each sensor's NATIVE-aspect size (≤720p) so the
+        // composite + PiP-box sizing report the true aspect (e.g. a 4:3 front sensor stays 4:3).
+        val primaryId = if (backIsPrimary) backId else frontId
+        val secondaryId = if (backIsPrimary) frontId else backId
+        val primarySize = captureSizeFor(primaryId)
+        val secondarySize = captureSizeFor(secondaryId)
+
         val inputs = processor.startStandaloneDual(
             preview = preview,
             encoder = encoder,
@@ -98,8 +106,8 @@ class DualCameraSession(
             secondarySensorDeg = secondarySensorDeg,
             secondaryIsFront = secondaryIsFront,
             displayDeg = displayDeg,
-            primarySize = PRIMARY_SIZE,
-            secondarySize = SECONDARY_SIZE,
+            primarySize = primarySize,
+            secondarySize = secondarySize,
             scene = scene,
         )
         dualInputs = inputs
@@ -117,6 +125,25 @@ class DualCameraSession(
             cameraManager.getCameraCharacteristics(id)
                 .get(CameraCharacteristics.SENSOR_ORIENTATION)
         }.getOrNull() ?: 0
+
+    /**
+     * Pick a capture [Size] for camera [id] from its supported SurfaceTexture output sizes: the
+     * largest-area size whose height ≤ 720 (the certified concurrent ≤720p guarantee). Falls back to
+     * the smallest available if none qualify. Preserves the sensor's NATIVE aspect (e.g. a 4:3 front
+     * sensor → 640x480/960x720), so the composite + PiP box report the true aspect.
+     */
+    private fun captureSizeFor(id: String): Size {
+        val sizes = runCatching {
+            cameraManager.getCameraCharacteristics(id)
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+        }.getOrNull()?.toList().orEmpty()
+        val chosen = sizes.filter { it.height <= 720 }.maxByOrNull { it.width.toLong() * it.height }
+            ?: sizes.minByOrNull { it.width.toLong() * it.height }
+            ?: Size(1280, 720)
+        Log.i(TAG, "capture id=$id size=${chosen.width}x${chosen.height}")
+        return chosen
+    }
 
     @SuppressLint("MissingPermission")
     private fun openDevice(id: String, target: Surface, handler: Handler, isBack: Boolean) {
@@ -213,8 +240,5 @@ class DualCameraSession(
 
     private companion object {
         const val TAG = "DualCameraSession"
-        // ≤720p concurrent guarantee: primary big view 720p, secondary PiP 360p.
-        val PRIMARY_SIZE = Size(1280, 720)
-        val SECONDARY_SIZE = Size(640, 360)
     }
 }
