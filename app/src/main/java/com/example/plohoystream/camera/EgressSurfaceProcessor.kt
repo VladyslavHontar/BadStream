@@ -84,6 +84,10 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     // fed by two independent Camera2 devices. The PRIMARY layer is then oriented with DisplayTransform
     // (like the SECONDARY), since neither source goes through CameraX's display-correcting transform.
     @Volatile private var standalone = false
+    // Instant camera swap (standalone only): which scene source maps to which input slot. When false
+    // PRIMARY→slotA(texture)/SECONDARY→slotB(texture2); when true the two are swapped. Both textures
+    // stream regardless, so flipping this is instant (no device/session reopen). GL-thread mutation.
+    @Volatile private var standaloneSwapped = false
     private val primaryRawTransform = FloatArray(16)
     @Volatile private var primarySrcW = 0
     @Volatile private var primarySrcH = 0
@@ -476,6 +480,7 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             this.secondaryIsFront = secondaryIsFront
             this.displayDeg = displayDeg
             this.scene = scene
+            standaloneSwapped = false
 
             // Report the secondary's displayed aspect (native w/h; rotation is aspect-preserving) so
             // the UI can size the PiP box to the source. Matches provideSecondarySurface.
@@ -608,46 +613,96 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         }
     }
 
+    /** A composite input source bound to one GL texture: the slot the scene maps PRIMARY/SECONDARY to. */
+    private class Slot(
+        val textureName: Int,
+        val rawTransform: FloatArray,
+        val sensorDeg: Int,
+        val isFront: Boolean,
+        val srcW: Int,
+        val srcH: Int,
+    )
+
+    private fun slotA() = Slot(
+        renderer.textureName, primaryRawTransform, primarySensorDeg, primaryIsFront, primarySrcW, primarySrcH,
+    )
+
+    private fun slotB() = Slot(
+        renderer.textureName2, secondaryRawTransform, secondarySensorDeg, secondaryIsFront, secondarySrcW, secondarySrcH,
+    )
+
     /**
      * Map the current [scene] to GL layers for [surface] in standalone mode. Unlike [buildLayers],
-     * the PRIMARY is oriented exactly like the SECONDARY (DisplayTransform composed with its raw
-     * SurfaceTexture transform), because neither source flows through CameraX's transform here. The
-     * SECONDARY layer is identical to single-mode (PiP rounded corners, front-mirror).
+     * the PRIMARY (big) source is oriented exactly like the SECONDARY (PiP) — DisplayTransform composed
+     * with its raw SurfaceTexture transform — because neither source flows through CameraX's transform
+     * here. Scene sources map to input slots by [standaloneSwapped]: when false PRIMARY→slotA(texture)
+     * / SECONDARY→slotB(texture2); when true they swap. Either way the big layer is full-frame with
+     * square corners and the PiP layer gets [PIP_CORNER_RADIUS]; each layer mirrors iff its mapped
+     * slot is the front camera (preserves the front-PiP-mirror behavior under swap).
      */
     private fun buildLayersStandalone(surface: Surface): List<GlRenderer.RenderLayer> {
         val dt = com.example.plohoystream.camera.scene.DisplayTransform
         val outAspect = renderer.outputAspect(surface)
+        val swapped = standaloneSwapped
+        val primarySlot = if (swapped) slotB() else slotA()
+        val secondarySlot = if (swapped) slotA() else slotB()
+        fun build(slot: Slot, layer: com.example.plohoystream.camera.scene.SceneLayer, isPip: Boolean):
+            GlRenderer.RenderLayer {
+            val contentAspect = if (slot.srcH > 0) slot.srcW.toFloat() / slot.srcH else 1f
+            val rectAspect = (layer.rect.width * outAspect) / layer.rect.height
+            val (cropX, cropY) = dt.coverCrop(contentAspect, rectAspect)
+            val orient = dt.matrix(slot.sensorDeg, displayDeg, slot.isFront, cropX, cropY)
+            val tex = FloatArray(16)
+            android.opengl.Matrix.multiplyMM(tex, 0, orient, 0, slot.rawTransform, 0)
+            return GlRenderer.RenderLayer(
+                slot.textureName, tex,
+                layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
+                cornerRadius = if (isPip) PIP_CORNER_RADIUS else 0f,
+                mirror = slot.isFront,
+            )
+        }
         return scene.ordered().mapNotNull { layer ->
             when (layer.source) {
-                com.example.plohoystream.camera.scene.SourceId.PRIMARY -> {
-                    val contentAspect = if (primarySrcH > 0) primarySrcW.toFloat() / primarySrcH else 1f
-                    val rectAspect = (layer.rect.width * outAspect) / layer.rect.height
-                    val (cropX, cropY) = dt.coverCrop(contentAspect, rectAspect)
-                    val orient = dt.matrix(primarySensorDeg, displayDeg, primaryIsFront, cropX, cropY)
-                    val tex = FloatArray(16)
-                    android.opengl.Matrix.multiplyMM(tex, 0, orient, 0, primaryRawTransform, 0)
-                    GlRenderer.RenderLayer(
-                        renderer.textureName, tex,
-                        layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
-                        mirror = primaryIsFront,
-                    )
-                }
-                com.example.plohoystream.camera.scene.SourceId.SECONDARY -> {
-                    val contentAspect = if (secondarySrcH > 0) secondarySrcW.toFloat() / secondarySrcH else 1f
-                    val rectAspect = (layer.rect.width * outAspect) / layer.rect.height
-                    val (cropX, cropY) = dt.coverCrop(contentAspect, rectAspect)
-                    val orient = dt.matrix(secondarySensorDeg, displayDeg, secondaryIsFront, cropX, cropY)
-                    val tex = FloatArray(16)
-                    android.opengl.Matrix.multiplyMM(tex, 0, orient, 0, secondaryRawTransform, 0)
-                    GlRenderer.RenderLayer(
-                        renderer.textureName2, tex,
-                        layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
-                        cornerRadius = PIP_CORNER_RADIUS,
-                        mirror = secondaryIsFront,
-                    )
-                }
+                com.example.plohoystream.camera.scene.SourceId.PRIMARY -> build(primarySlot, layer, isPip = false)
+                com.example.plohoystream.camera.scene.SourceId.SECONDARY -> build(secondarySlot, layer, isPip = true)
             }
         }
+    }
+
+    /**
+     * Instant camera swap (standalone only): set whether the scene's PRIMARY/SECONDARY map to the
+     * swapped input slots. After the flag flips, re-report the aspect of whichever slot is now in the
+     * PiP (SECONDARY) so the UI re-sizes the PiP box. On the GL thread. No-op outside standalone.
+     */
+    fun setStandaloneSwapped(swapped: Boolean) {
+        if (isReleaseRequested.get()) return
+        executeSafely({
+            if (!standalone) return@executeSafely
+            standaloneSwapped = swapped
+            // The PiP shows slotA when swapped (PRIMARY→slotB, SECONDARY→slotA), else slotB.
+            val pip = if (swapped) slotA() else slotB()
+            val aspect = if (pip.srcH > 0) pip.srcW.toFloat() / pip.srcH else 1f
+            onSecondaryAspect?.invoke(aspect)
+        })
+    }
+
+    /**
+     * Update the BACK camera's sensor orientation + facing after a [DualCameraSession.switchBack],
+     * writing it into the slot the back occupies: slotA (primary fields) when [inSlotA] is true,
+     * otherwise slotB (secondary fields). On the GL thread. No-op outside standalone.
+     */
+    fun setStandaloneBackOrientation(sensorDeg: Int, isFront: Boolean, inSlotA: Boolean) {
+        if (isReleaseRequested.get()) return
+        executeSafely({
+            if (!standalone) return@executeSafely
+            if (inSlotA) {
+                primarySensorDeg = sensorDeg
+                primaryIsFront = isFront
+            } else {
+                secondarySensorDeg = sensorDeg
+                secondaryIsFront = isFront
+            }
+        })
     }
 
     // endregion
