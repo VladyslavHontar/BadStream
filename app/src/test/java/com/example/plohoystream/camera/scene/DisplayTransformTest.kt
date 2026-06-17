@@ -11,9 +11,10 @@ class DisplayTransformTest {
         assertEquals(90, DisplayTransform.netRotationDegrees(sensorDeg = 90, displayDeg = 0, isFront = false))
     }
 
-    @Test fun netRotation_front_addsDisplay() {
-        assertEquals(0, DisplayTransform.netRotationDegrees(sensorDeg = 270, displayDeg = 90, isFront = true))
-        assertEquals(180, DisplayTransform.netRotationDegrees(sensorDeg = 90, displayDeg = 90, isFront = true))
+    @Test fun netRotation_front_addsDisplayMinusQuarterTurn() {
+        // On-device verified: front sensor 270 + display 90 → upright at 270 (= 270+90-90).
+        assertEquals(270, DisplayTransform.netRotationDegrees(sensorDeg = 270, displayDeg = 90, isFront = true))
+        assertEquals(90, DisplayTransform.netRotationDegrees(sensorDeg = 90, displayDeg = 90, isFront = true))
     }
 
     @Test fun netRotation_isAlwaysNormalizedTo0_359() {

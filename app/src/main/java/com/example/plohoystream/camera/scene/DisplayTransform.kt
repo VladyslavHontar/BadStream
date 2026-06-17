@@ -12,10 +12,16 @@ import android.opengl.Matrix
  */
 object DisplayTransform {
 
-    /** Clockwise degrees to rotate the sensor image to be upright on the display.
-     *  Back: (sensor - display + 360) % 360. Front: (sensor + display) % 360 (mirror separate). */
+    /**
+     * Clockwise degrees to rotate the sampled sensor image upright on the display, for a camera fed
+     * RAW into the compositor (no CameraX SurfaceOutput transform). Back: `(sensor - display)`.
+     * Front: `(sensor + display - 90)` — the extra quarter-turn vs. the textbook `(sensor + display)`
+     * accounts for the horizontal mirror flipping the rotation sense in texture space; it was
+     * calibrated on-device (front sensor 270 + display 90 → upright at 270, not 0). All normalized to
+     * 0..359. Verified at display ROTATION_90 (the app is landscape-locked).
+     */
     fun netRotationDegrees(sensorDeg: Int, displayDeg: Int, isFront: Boolean): Int {
-        val raw = if (isFront) sensorDeg + displayDeg else sensorDeg - displayDeg
+        val raw = if (isFront) sensorDeg + displayDeg - 90 else sensorDeg - displayDeg
         return ((raw % 360) + 360) % 360
     }
 
