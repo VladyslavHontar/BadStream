@@ -118,6 +118,7 @@ class CameraStreamEngine(
             // stop() cancels this job (interrupting the backoff delay) and tears down itself.
             while (userWantsLive) {
                 mediaStarted = false
+                android.util.Log.i("CameraStreamEngine", "state -> Connecting")
                 _state.value = StreamState.Connecting
                 val s = streamerFactory(scheme).also { streamer = it }
                 s.start(endpoint, requested.codec, width, height, fps, sampleRate, abr)
@@ -138,6 +139,7 @@ class CameraStreamEngine(
                     Outcome.Rejected -> { userWantsLive = false; _state.value = StreamState.Error("Stream rejected") }
                     Outcome.Dropped -> {
                         if (!userWantsLive) break
+                        android.util.Log.i("CameraStreamEngine", "state -> Reconnecting (connection to OBS dropped)")
                         _state.value = StreamState.Reconnecting
                         delay(reconnectDelayMs)      // cancellable: stop() aborts the wait
                     }
@@ -162,6 +164,7 @@ class CameraStreamEngine(
                         startMedia(s, actual, quality, record)
                         _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
                     }
+                    if (_state.value != StreamState.Live) android.util.Log.i("CameraStreamEngine", "state -> Live")
                     _state.value = StreamState.Live
                     val kbps = bitrateMeter.update(s.bytesSent(), System.currentTimeMillis())
                     _bitrateKbps.value = kbps
