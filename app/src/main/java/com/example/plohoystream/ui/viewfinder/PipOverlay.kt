@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,6 +23,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.example.plohoystream.camera.scene.Scene
@@ -43,6 +46,10 @@ fun PipOverlay(
     modifier: Modifier = Modifier,
 ) {
     val pip = scene.layer(SourceId.SECONDARY)?.rect ?: return
+    // The gesture coroutines below are keyed only on boxW/boxH (so a scene change mid-drag doesn't
+    // cancel the in-flight pointer tracking); they read the LATEST scene through this snapshot so each
+    // drag delta accumulates from the current position rather than the stale pre-drag one.
+    val latestScene by rememberUpdatedState(scene)
     var boxW by remember { mutableStateOf(1) }
     var boxH by remember { mutableStateOf(1) }
     val density = LocalDensity.current
@@ -59,13 +66,13 @@ fun PipOverlay(
                     detectDragGestures(
                         onDrag = { change, drag ->
                             change.consume()
-                            val cur = scene.layer(SourceId.SECONDARY)?.rect ?: return@detectDragGestures
+                            val cur = latestScene.layer(SourceId.SECONDARY)?.rect ?: return@detectDragGestures
                             val cx = cur.centerX + drag.x / boxW
                             val cy = cur.centerY + drag.y / boxH
-                            onSceneChange(scene.updateLayer(SourceId.SECONDARY) { SceneEdits.moveTo(it, cx, cy) })
+                            onSceneChange(latestScene.updateLayer(SourceId.SECONDARY) { SceneEdits.moveTo(it, cx, cy) })
                         },
                         onDragEnd = {
-                            onSceneChange(scene.updateLayer(SourceId.SECONDARY) {
+                            onSceneChange(latestScene.updateLayer(SourceId.SECONDARY) {
                                 SceneEdits.snapToCorner(it, Scene.PIP_MARGIN)
                             })
                         },
@@ -82,13 +89,15 @@ fun PipOverlay(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .size(28.dp)
+                    .size(44.dp)                                   // >=48dp-ish touch target for one-handed use
+                    .semantics { contentDescription = "Resize PiP" }
                     .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
                     .pointerInput(boxW, boxH) {
                         detectDragGestures { change, drag ->
                             change.consume()
-                            val deltaWf = drag.x / boxW
-                            onSceneChange(scene.updateLayer(SourceId.SECONDARY) {
+                            // Bottom-right handle: dragging right OR down grows the (square) PiP.
+                            val deltaWf = (drag.x / boxW + drag.y / boxH) * 0.5f
+                            onSceneChange(latestScene.updateLayer(SourceId.SECONDARY) {
                                 SceneEdits.resizeKeepingCenter(it, it.width + deltaWf)
                             })
                         }

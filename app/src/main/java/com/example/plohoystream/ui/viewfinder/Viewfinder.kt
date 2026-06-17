@@ -94,6 +94,9 @@ fun Viewfinder(viewModel: StreamViewModel) {
     var exposureOpen by remember { mutableStateOf(false) }
     var scene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.SINGLE) }
     val dualOn = scene.isDual
+    // Remember the dual layout so toggling dual off then on restores the user's PiP position/size
+    // rather than snapping back to the default corner.
+    var lastDualScene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.dual()) }
     val selectedPhysicalId by selectedLensFlow.collectAsStateWithLifecycle()
     var zoomVisible by remember { mutableStateOf(false) }
     var zoomNonce by remember { mutableStateOf(0) }
@@ -401,8 +404,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             // Only flip the flag; the binding LaunchedEffect (keyed on dualOn) does the
                             // actual (re)bind, so there's a single binder and no race with start().
                             onToggleDual = {
-                                scene = if (scene.isDual) com.example.plohoystream.camera.scene.Scene.SINGLE
-                                        else com.example.plohoystream.camera.scene.Scene.dual()
+                                scene = if (scene.isDual) {
+                                    lastDualScene = scene                       // preserve PiP layout
+                                    com.example.plohoystream.camera.scene.Scene.SINGLE
+                                } else {
+                                    lastDualScene
+                                }
                             },
                             modifier = Modifier.fillMaxSize().padding(12.dp),
                         )
