@@ -92,7 +92,8 @@ fun Viewfinder(viewModel: StreamViewModel) {
     }
     val exposure by exposureFlow.collectAsStateWithLifecycle()
     var exposureOpen by remember { mutableStateOf(false) }
-    var dualOn by remember { mutableStateOf(false) }
+    var scene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.SINGLE) }
+    val dualOn = scene.isDual
     val selectedPhysicalId by selectedLensFlow.collectAsStateWithLifecycle()
     var zoomVisible by remember { mutableStateOf(false) }
     var zoomNonce by remember { mutableStateOf(0) }
@@ -165,12 +166,21 @@ fun Viewfinder(viewModel: StreamViewModel) {
         } else {
             val cx = controller as? CameraXController
             if (dualOn && cx != null) {
-                cx.startDual(primaryFacing = facing, targets = targets, onFailed = { dualOn = false })
+                cx.startDual(
+                    primaryFacing = facing, scene = scene, targets = targets,
+                    onFailed = { scene = com.example.plohoystream.camera.scene.Scene.SINGLE },
+                )
             } else {
                 controller.start(c, targets, hdr = activeHdr)
                 controller.setZoom(zoom)
             }
         }
+    }
+
+    // Live PiP edits (drag/resize): push the scene to the GL pipeline without rebinding cameras.
+    LaunchedEffect(scene) {
+        val cx = controller as? CameraXController ?: return@LaunchedEffect
+        if (scene.isDual) cx.setScene(scene)
     }
 
     // Force a fresh camera bind when the app returns to the foreground. On resume the TextureView
@@ -184,6 +194,7 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val currentZoom by rememberUpdatedState(zoom)
     val currentDualOn by rememberUpdatedState(dualOn)
     val currentFacing by rememberUpdatedState(facing)
+    val currentScene by rememberUpdatedState(scene)
     var resumed by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -196,7 +207,7 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     if (c != null && targets.isNotEmpty()) {
                         val cx = controller as? CameraXController
                         if (currentDualOn && cx != null) {
-                            cx.startDual(primaryFacing = currentFacing, targets = targets, onFailed = {})
+                            cx.startDual(primaryFacing = currentFacing, scene = currentScene, targets = targets, onFailed = {})
                         } else {
                             controller.start(c, targets, hdr = currentHdr)
                             controller.setZoom(currentZoom)
@@ -327,6 +338,20 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             .width(300.dp),
                     )
                 }
+                if (dualOn) {
+                    PipOverlay(
+                        scene = scene,
+                        onSceneChange = { scene = it },
+                        onSwap = {
+                            // Blur over the rebind, then flip which camera is the big (primary) view;
+                            // the binder (config depends on facing) rebinds dual with the high-res slot
+                            // following the new primary.
+                            (controller as? CameraXController)?.beginCameraTransition()
+                            facing = CameraControls.opposite(facing)
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
             Box(modifier = Modifier.width(rightWidth).fillMaxHeight()) {
                 AnimatedContent(
@@ -375,7 +400,10 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             dualOn = dualOn,
                             // Only flip the flag; the binding LaunchedEffect (keyed on dualOn) does the
                             // actual (re)bind, so there's a single binder and no race with start().
-                            onToggleDual = { dualOn = !dualOn },
+                            onToggleDual = {
+                                scene = if (scene.isDual) com.example.plohoystream.camera.scene.Scene.SINGLE
+                                        else com.example.plohoystream.camera.scene.Scene.dual()
+                            },
                             modifier = Modifier.fillMaxSize().padding(12.dp),
                         )
                     }

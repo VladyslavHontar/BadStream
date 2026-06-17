@@ -154,7 +154,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             // the preview.
             val encoder = targets.firstOrNull { it !== previewSurface }
             processor.setEncoderSurface(encoder)
-            processor.setDualMode(false)   // single-camera path: clear any prior dual state
+            processor.setScene(com.example.plohoystream.camera.scene.Scene.SINGLE)  // clear dual state
             Log.i(TAG, "start facing=${config.facing} targets=${targets.size} encoder=${encoder != null}")
             bindIfReady()
         }
@@ -180,38 +180,60 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     }
 
     /**
-     * Bind FRONT + BACK concurrently, both feeding the shared [processor]. Primary is [primaryFacing]
-     * at 1280x720; the other is the PiP source at 640x360 (distinguishable by resolution). Targets are
-     * the same preview/encoder surfaces as single mode. Calls [onFailed] if the device rejects the
-     * concurrent bind (caller reverts to single mode).
+     * Bind FRONT + BACK concurrently, both feeding the shared [processor]. [primaryFacing] takes the
+     * high-res slot (the big view); the other is the PiP. [scene] is the composited layout. We read
+     * the SECONDARY camera's sensor orientation here so its PiP transform is derived correctly. Calls
+     * [onFailed] on a rejected concurrent bind (caller reverts to single mode).
      */
-    fun startDual(primaryFacing: Facing, targets: List<Surface>, onFailed: () -> Unit) {
+    fun startDual(
+        primaryFacing: Facing,
+        scene: com.example.plohoystream.camera.scene.Scene,
+        targets: List<Surface>,
+        onFailed: () -> Unit,
+    ) {
         mainExecutor.execute {
             val provider = provider ?: run { onFailed(); return@execute }
             lastTargets = targets
             val encoder = targets.firstOrNull { it !== previewSurface }
             processor.setEncoderSurface(encoder)
-            processor.setDualMode(true)
+            val secondaryFacing = if (primaryFacing == Facing.FRONT) Facing.BACK else Facing.FRONT
+            val mgr = runCatching {
+                appContext.getSystemService(android.content.Context.CAMERA_SERVICE)
+                    as android.hardware.camera2.CameraManager
+            }.getOrNull()
+            val secId = mgr?.let {
+                defaultCameraId(it, if (secondaryFacing == Facing.FRONT)
+                    CameraMetadata.LENS_FACING_FRONT else CameraMetadata.LENS_FACING_BACK)
+            }
+            val sensorDeg = secId?.let {
+                runCatching {
+                    mgr.getCameraCharacteristics(it).get(CameraCharacteristics.SENSOR_ORIENTATION)
+                }.getOrNull()
+            } ?: 0
+            processor.setDualConfig(sensorDeg, secondaryFacing == Facing.FRONT, displayDegrees())
+            processor.setScene(scene)
             runCatching { provider.unbindAll() }
             // unbindAll() closes the prior session's camera ASYNCHRONOUSLY. Opening the concurrent
             // pair before that close finishes throws ERROR_CAMERA_LIMIT_EXCEEDED (the front camera
             // never opens → frozen feed on a re-toggle). Gate the bind on both cameras being free.
             awaitCamerasFreeThenBind {
-                val secondaryFacing = if (primaryFacing == Facing.FRONT) Facing.BACK else Facing.FRONT
                 val primaryCfg = singleConfig(primaryFacing, Size(1280, 720), primary = true)
                 val secondaryCfg = singleConfig(secondaryFacing, Size(640, 360), primary = false)
                 registry.currentState = Lifecycle.State.STARTED
                 try {
                     provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
-                    Log.i(TAG, "bound dual: primary=$primaryFacing")
+                    Log.i(TAG, "bound dual: primary=$primaryFacing secondarySensor=$sensorDeg")
                 } catch (e: Exception) {
                     Log.e(TAG, "concurrent bind failed; caller falls back to single", e)
-                    processor.setDualMode(false)
+                    processor.setScene(com.example.plohoystream.camera.scene.Scene.SINGLE)
                     onFailed()
                 }
             }
         }
     }
+
+    /** Push a new composited scene to the GL pipeline (live PiP move/resize). */
+    fun setScene(scene: com.example.plohoystream.camera.scene.Scene) = processor.setScene(scene)
 
     /**
      * Run [bind] (on the main thread) once the default front AND back cameras are both reported
@@ -300,6 +322,14 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         wm.defaultDisplay.rotation
     } catch (e: Exception) {
         Surface.ROTATION_0
+    }
+
+    /** Current display rotation in degrees (0/90/180/270), for the secondary's derived transform. */
+    private fun displayDegrees(): Int = when (displayRotation()) {
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
     }
 
     private fun onProviderReady() {
