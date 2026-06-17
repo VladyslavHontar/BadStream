@@ -45,8 +45,9 @@ class ConcurrentCameraCapabilitiesTest {
         assertFalse(none.supportsDual())
     }
 
-    @Test fun teleOpen_mainBecomesZoomDown_isUnavailableNotZoom() {
-        // If tele (#3, 1.8x) were the open back, main (1.0x) is WIDER → not reachable by zoom-in.
-        assertEquals(DualClass.UNAVAILABLE, seeker.dualClass(main, openBack = tele, frontId = "1"))
+    @Test fun widerNonConcurrent_fromTeleOpen_isUnavailable() {
+        // ultrawide (0.8x) is wider than the open tele (1.8x) → can't zoom to it, and it isn't
+        // concurrent with the front → UNAVAILABLE.
+        assertEquals(DualClass.UNAVAILABLE, seeker.dualClass(ultrawide, openBack = tele, frontId = "1"))
     }
 }

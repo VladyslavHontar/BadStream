@@ -26,11 +26,12 @@ class ConcurrentCameraCapabilities(
 
     /**
      * Classify [chip] for dual when [openBack] is the currently-open back sensor and [frontId] is the
-     * PiP front. REAL = its own sensor runs with the front; ZOOM = reachable by zooming the open
-     * sensor (zoom only narrows FOV); UNAVAILABLE = wider than the open sensor and not concurrent.
+     * PiP front. REAL = chip's own sensor runs concurrently with the front (independent of which back
+     * is currently open); ZOOM = reachable by zooming the open sensor (zoom only narrows FOV);
+     * UNAVAILABLE = wider than the open sensor and not concurrent with the front.
      */
     fun dualClass(chip: BackLens, openBack: BackLens, frontId: String): DualClass = when {
-        isConcurrent(chip.id, frontId) && isConcurrent(openBack.id, frontId) -> DualClass.REAL
+        isConcurrent(chip.id, frontId) -> DualClass.REAL
         chip.ratio in (openBack.ratio * openBack.minZoom)..(openBack.ratio * openBack.maxZoom) -> DualClass.ZOOM
         else -> DualClass.UNAVAILABLE
     }
