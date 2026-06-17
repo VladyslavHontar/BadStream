@@ -1,11 +1,12 @@
 package com.example.plohoystream.ui.viewfinder
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -17,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -84,9 +86,8 @@ fun PipOverlay(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .size(44.dp)                                   // generous touch target for one-handed use
+                    .size(44.dp)                                   // generous (invisible) touch target
                     .semantics { contentDescription = "Resize PiP" }
-                    .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
                     .pointerInput(boxW, boxH) {
                         detectDragGestures { change, drag ->
                             change.consume()
@@ -97,7 +98,37 @@ fun PipOverlay(
                             })
                         }
                     },
-            )
+                contentAlignment = Alignment.BottomEnd,
+            ) {
+                // Subtle resize affordance: a corner-bracket whose corner is ROUNDED (a quarter-arc
+                // matching the PiP border's rounded outline), sitting just inside the bottom-right
+                // corner — instead of a filled square or a sharp 90° bracket.
+                Canvas(
+                    modifier = Modifier
+                        .padding(end = 5.dp, bottom = 5.dp)
+                        .size(16.dp),
+                ) {
+                    val stroke = 2.dp.toPx()
+                    val r = 7.dp.toPx()                 // corner radius ≈ PiP border radius, inset
+                    val x = size.width
+                    val y = size.height
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(x, 0f)                    // top of the right arm
+                        lineTo(x, y - r)                 // down the right edge
+                        quadraticBezierTo(x, y, x - r, y) // rounded corner
+                        lineTo(0f, y)                    // along the bottom edge
+                    }
+                    drawPath(
+                        path,
+                        Color.White.copy(alpha = 0.85f),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = stroke,
+                            cap = StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                        ),
+                    )
+                }
+            }
         }
     }
 }

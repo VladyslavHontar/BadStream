@@ -52,10 +52,15 @@ class EgressSurfaceProcessor : SurfaceProcessor {
 
     /** Replace the composited scene (live; safe from any thread). >1 layer engages the compositor. */
     fun setScene(newScene: com.example.plohoystream.camera.scene.Scene) {
-        executeSafely({
-            scene = newScene
-            if (!newScene.isDual) { primaryTexture = null; secondaryTexture = null }
-        })
+        // `scene` is @Volatile and read on the GL thread at composite time, so a live PiP edit
+        // (drag/resize, which stays dual) publishes the new reference DIRECTLY — no glHandler post.
+        // Posting a runnable per drag event floods the single GL handler ahead of the camera frame
+        // callbacks (which post to the SAME handler), starving updateTexImage and dropping the PiP to
+        // ~10fps. Only a transition to single mode needs the GL thread, to drop the dual textures.
+        scene = newScene
+        if (!newScene.isDual) {
+            executeSafely({ primaryTexture = null; secondaryTexture = null })
+        }
     }
 
     /** Orientation inputs for the SECONDARY (PiP) source's derived transform. Set at dual bind. */
@@ -317,6 +322,13 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             }
             return
         }
+
+        // The scene wants a composite but a source isn't ready yet — during a dual rebind (e.g. a
+        // back-lens switch) the textures are briefly torn down and reopened, and the new primary's
+        // first frame can arrive before the secondary's. Hold the last composited frame rather than
+        // flashing the primary full-frame (the PiP blinking out then back). Falls back to single
+        // rendering only when the scene is genuinely single (dualMode false).
+        if (dualMode) return
 
         // Render to each CameraX preview output (transform adjusted by the SurfaceOutput). Cache
         // that orientation-corrected transform so the encoder matches the preview orientation.
