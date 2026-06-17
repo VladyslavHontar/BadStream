@@ -93,6 +93,11 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     private val standaloneOutputs = LinkedHashSet<Surface>()
     private var standalonePreview: Surface? = null
     private var standaloneEncoder: Surface? = null
+    // Surface wrappers around the standalone input SurfaceTextures. GL-thread-only. Must be released
+    // on teardown alongside their SurfaceTextures (the single-mode path in onInputSurface releases
+    // both in its provideSurface callback; standalone has no such callback, so we track them here).
+    private var standalonePrimarySurface: Surface? = null
+    private var standaloneSecondarySurface: Surface? = null
 
     /** When true, [onLuma] is invoked ~5Hz with the average frame luma (0..1) for Auto-ISO. */
     @Volatile var meteringEnabled = false
@@ -496,7 +501,11 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             primaryST.setOnFrameAvailableListener({ st -> onPrimaryFrame(st) }, glHandler)
             secondaryST.setOnFrameAvailableListener({ st -> onSecondaryFrame(st) }, glHandler)
 
-            result = DualInputs(Surface(primaryST), Surface(secondaryST))
+            val primarySfc = Surface(primaryST)
+            val secondarySfc = Surface(secondaryST)
+            standalonePrimarySurface = primarySfc
+            standaloneSecondarySurface = secondarySfc
+            result = DualInputs(primarySfc, secondarySfc)
         }
         return result!!
     }
@@ -554,12 +563,16 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 st.setOnFrameAvailableListener(null)
                 st.release()
             }
+            standalonePrimarySurface?.release()
             secondaryTexture?.let { st ->
                 st.setOnFrameAvailableListener(null)
                 st.release()
             }
+            standaloneSecondarySurface?.release()
             primaryTexture = null
             secondaryTexture = null
+            standalonePrimarySurface = null
+            standaloneSecondarySurface = null
             standalone = false
         })
     }
@@ -668,12 +681,16 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 st.setOnFrameAvailableListener(null)
                 st.release()
             }
+            standalonePrimarySurface?.release()
             secondaryTexture?.let { st ->
                 st.setOnFrameAvailableListener(null)
                 st.release()
             }
+            standaloneSecondarySurface?.release()
             primaryTexture = null
             secondaryTexture = null
+            standalonePrimarySurface = null
+            standaloneSecondarySurface = null
             renderer.release()
             glThread.quit()
         }
