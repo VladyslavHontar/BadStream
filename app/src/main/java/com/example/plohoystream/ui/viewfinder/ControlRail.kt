@@ -16,7 +16,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
@@ -48,7 +47,6 @@ fun ControlRail(
     canGoLive: Boolean,
     errorReason: String?,
     onSelectLens: (LensOption) -> Unit,
-    onFlip: () -> Unit,
     onGoLive: () -> Unit,
     onStop: () -> Unit,
     onSettings: () -> Unit,
@@ -90,9 +88,7 @@ fun ControlRail(
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            IconButton(onClick = onFlip, modifier = Modifier.size(40.dp).clip(CircleShape)) {
-                Icon(Icons.Filled.Cameraswitch, contentDescription = "Flip camera", tint = OnSurfaceWhite)
-            }
+            // Camera flip (front/back) is a double-tap on the preview; dual swap is a tap on the PiP.
             if (dualSupported) {
                 IconButton(onClick = onToggleDual, modifier = Modifier.size(40.dp).clip(CircleShape)) {
                     Icon(
@@ -112,20 +108,20 @@ fun ControlRail(
 
 @Preview(name = "setup", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailSetupPreview() = PlohoyTheme {
-    ControlRail(StreamState.Idle, "00:00", ConnectionHealth.Good, 0, 0f, emptyList(), null, true, null, {}, {}, {}, {}, {}, false, emptyList(), null, {})
+    ControlRail(StreamState.Idle, "00:00", ConnectionHealth.Good, 0, 0f, emptyList(), null, true, null, {}, {}, {}, {},false, emptyList(), null, {})
 }
 
 @Preview(name = "live", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailLivePreview() = PlohoyTheme {
-    ControlRail(StreamState.Live, "01:23", ConnectionHealth.Warn, 4200, 0.8f, emptyList(), null, false, null, {}, {}, {}, {}, {}, true, listOf("Main", "BRB"), "Main", {})
+    ControlRail(StreamState.Live, "01:23", ConnectionHealth.Warn, 4200, 0.8f, emptyList(), null, false, null, {}, {}, {}, {},true, listOf("Main", "BRB"), "Main", {})
 }
 
 @Preview(name = "error", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailErrorPreview() = PlohoyTheme {
-    ControlRail(StreamState.Error("Connection refused"), "00:00", ConnectionHealth.Bad, 0, 0f, emptyList(), null, true, "Connection refused", {}, {}, {}, {}, {}, false, emptyList(), null, {})
+    ControlRail(StreamState.Error("Connection refused"), "00:00", ConnectionHealth.Bad, 0, 0f, emptyList(), null, true, "Connection refused", {}, {}, {}, {},false, emptyList(), null, {})
 }
 
 @Preview(name = "reconnecting", widthDp = 240, heightDp = 360, showBackground = true, backgroundColor = 0xFF000000)
 @Composable private fun RailReconnectingPreview() = PlohoyTheme {
-    ControlRail(StreamState.Reconnecting, "01:30", ConnectionHealth.Warn, 0, 0f, emptyList(), null, false, null, {}, {}, {}, {}, {}, true, listOf("Main", "BRB"), "BRB", {})
+    ControlRail(StreamState.Reconnecting, "01:30", ConnectionHealth.Warn, 0, 0f, emptyList(), null, false, null, {}, {}, {}, {},true, listOf("Main", "BRB"), "BRB", {})
 }

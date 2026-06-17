@@ -3,14 +3,11 @@ package com.example.plohoystream.ui.viewfinder
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,11 +29,14 @@ import com.example.plohoystream.camera.scene.SceneEdits
 import com.example.plohoystream.camera.scene.SourceId
 import kotlin.math.roundToInt
 
+/** Corner radius for the PiP border; matches the GL-rendered video's rounded corners. */
+val PIP_CORNER_RADIUS = 12.dp
+
 /**
  * Interactive PiP layer over the preview. Drag to move (corner-snap on release); drag the bottom-
- * right handle to resize; tap the swap button to exchange the big view and the PiP camera. Every
- * gesture mutates the [Scene] via [onSceneChange] (live on preview AND stream); [onSwap] triggers
- * the camera rebind. Coordinates are normalized; converted with the measured overlay pixel size.
+ * right handle to resize; single-tap to swap the big view and the PiP camera. Every edit mutates the
+ * [Scene] via [onSceneChange] (live on preview AND stream); [onSwap] triggers the camera rebind.
+ * Coordinates are normalized; converted with the measured overlay pixel size.
  */
 @Composable
 fun PipOverlay(
@@ -61,7 +61,9 @@ fun PipOverlay(
             modifier = Modifier
                 .offset { IntOffset((pip.left * boxW).roundToInt(), (pip.top * boxH).roundToInt()) }
                 .size(with(density) { pipWpx.toDp() }, with(density) { pipHpx.toDp() })
-                .border(2.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                .border(2.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(PIP_CORNER_RADIUS))
+                // Single tap swaps which camera is the big view (the rendered swap is a rebind).
+                .pointerInput(Unit) { detectTapGestures(onTap = { onSwap() }) }
                 .pointerInput(boxW, boxH) {
                     detectDragGestures(
                         onDrag = { change, drag ->
@@ -79,23 +81,16 @@ fun PipOverlay(
                     )
                 },
         ) {
-            IconButton(
-                onClick = onSwap,
-                modifier = Modifier.align(Alignment.TopStart).size(36.dp)
-                    .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(8.dp)),
-            ) {
-                Icon(Icons.Filled.SwapHoriz, contentDescription = "Swap cameras", tint = Color.White)
-            }
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .size(44.dp)                                   // >=48dp-ish touch target for one-handed use
+                    .size(44.dp)                                   // generous touch target for one-handed use
                     .semantics { contentDescription = "Resize PiP" }
                     .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
                     .pointerInput(boxW, boxH) {
                         detectDragGestures { change, drag ->
                             change.consume()
-                            // Bottom-right handle: dragging right OR down grows the (square) PiP.
+                            // Bottom-right handle: dragging right OR down grows the PiP (aspect kept).
                             val deltaWf = (drag.x / boxW + drag.y / boxH) * 0.5f
                             onSceneChange(latestScene.updateLayer(SourceId.SECONDARY) {
                                 SceneEdits.resizeKeepingCenter(it, it.width + deltaWf)

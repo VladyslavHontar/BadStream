@@ -291,10 +291,18 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     .pointerInput(zoomRange) {
                         detectTransformGestures { _, _, zoomChange, _ -> applyZoom(zoom * zoomChange) }
                     }
-                    // Single tap reveals the zoom slider for a few seconds (bumping the nonce
-                    // restarts the auto-hide timer) without changing zoom.
+                    // Single tap reveals the zoom slider; double tap flips front/back (single mode).
+                    // In dual mode the camera swap is a tap on the PiP instead (see PipOverlay).
                     .pointerInput(Unit) {
-                        detectTapGestures { zoomNonce++ }
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (!currentDualOn) {
+                                    (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
+                                    facing = CameraControls.opposite(currentFacing); zoom = 1f
+                                }
+                            },
+                            onTap = { zoomNonce++ },
+                        )
                     },
             ) {
                 CameraPreview(
@@ -413,10 +421,6 @@ fun Viewfinder(viewModel: StreamViewModel) {
                                 (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
                                 zoom = 1f
                                 (controller as? CameraXController)?.selectLens(lens.physicalId)
-                            },
-                            onFlip = {
-                                (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
-                                facing = CameraControls.opposite(facing); zoom = 1f
                             },
                             onGoLive = viewModel::goLive,
                             onStop = viewModel::stop,

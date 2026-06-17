@@ -34,6 +34,7 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     private companion object {
         const val TAG = "EgressSurfaceProcessor"
         const val METER_EVERY = 6   // sample luma every Nth frame (~5Hz at 30fps) for Auto-ISO
+        const val PIP_CORNER_RADIUS = 0.18f   // PiP rounded-corner radius, in half-height units
     }
 
     // Scene compositor state. The scene (single source of truth for preview + stream) and the
@@ -381,6 +382,7 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                     GlRenderer.RenderLayer(
                         renderer.textureName2, tex,
                         layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
+                        cornerRadius = PIP_CORNER_RADIUS,
                     )
                 }
             }

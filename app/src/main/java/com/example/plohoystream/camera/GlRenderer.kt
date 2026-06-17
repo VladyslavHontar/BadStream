@@ -71,11 +71,23 @@ class GlRenderer {
             precision mediump float;
             uniform samplerExternalOES $VAR_TEXTURE;
             uniform float uAlphaScale;
+            uniform float uCornerRadius;   // rounded-rect radius in half-height units; 0 = square
+            uniform float uRectAspect;     // quad width/height, to keep corners circular
             varying vec2 $VAR_TEXTURE_COORD;
             varying vec2 vPosition;
             void main() {
                 vec4 src = texture2D($VAR_TEXTURE, $VAR_TEXTURE_COORD);
-                gl_FragColor = vec4(src.rgb, src.a * uAlphaScale);
+                float alpha = src.a * uAlphaScale;
+                if (uCornerRadius > 0.0) {
+                    // vPosition is the quad's local coords in [-1,1]^2. Work in half-height units
+                    // (x scaled by aspect) so the rounded corners are circular, not elliptical.
+                    vec2 p = vec2(vPosition.x * uRectAspect, vPosition.y);
+                    vec2 halfExt = vec2(uRectAspect, 1.0);
+                    vec2 d = abs(p) - (halfExt - vec2(uCornerRadius));
+                    float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - uCornerRadius;
+                    alpha *= 1.0 - smoothstep(-0.012, 0.012, dist);   // soft 1px-ish edge
+                }
+                gl_FragColor = vec4(src.rgb, alpha);
             }
             """.trimIndent()
 
@@ -193,6 +205,8 @@ class GlRenderer {
     private var texMatrixLoc = -1
     private var samplerLoc = -1
     private var alphaScaleLoc = -1
+    private var cornerRadiusLoc = -1
+    private var rectAspectLoc = -1
 
     private var externalTextureId = -1
     private var externalTextureId2 = -1
@@ -340,10 +354,12 @@ class GlRenderer {
         val textureId: Int,
         val texTransform: FloatArray,
         val left: Float, val top: Float, val right: Float, val bottom: Float,
+        val cornerRadius: Float = 0f,   // rounded-rect radius in half-height units; 0 = square
     )
 
     /** Composite [layers] (in order) into [surface]. Each layer is positioned by its rect and
-     *  textured by its transform; the base layer (full rect) covers the frame. Swaps once. */
+     *  textured by its transform; the base layer (full rect) covers the frame. Rounded layers blend
+     *  over the ones beneath. Swaps once. */
     fun renderScene(timestampNs: Long, layers: List<RenderLayer>, surface: Surface) {
         checkInitialized(); checkGlThread()
         var outputSurface = getOutSurfaceOrThrow(surface)
@@ -355,9 +371,15 @@ class GlRenderer {
         makeCurrent(outputSurface.eglSurface)
         currentSurface = surface
         GLES20.glViewport(0, 0, outputSurface.width, outputSurface.height)
-        for (layer in layers) drawLayer(layer)
+        // Premultiplied-style src-over blend so a layer's rounded (transparent) corners reveal the
+        // layer beneath instead of writing opaque black.
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        for (layer in layers) drawLayer(layer, outputSurface.width, outputSurface.height)
+        GLES20.glDisable(GLES20.GL_BLEND)
         // Restore defaults for the next single-camera render()/frozen path.
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
+        GLES20.glUniform1f(cornerRadiusLoc, 0.0f)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
         EGLExt.eglPresentationTimeANDROID(eglDisplay, outputSurface.eglSurface, timestampNs)
         if (!EGL14.eglSwapBuffers(eglDisplay, outputSurface.eglSurface)) {
@@ -365,8 +387,8 @@ class GlRenderer {
         }
     }
 
-    /** Place [layer]'s rect via uTransMatrix (NDC), bind its texture, draw the strip. */
-    private fun drawLayer(layer: RenderLayer) {
+    /** Place [layer]'s rect via uTransMatrix (NDC), bind its texture, set its corner rounding, draw. */
+    private fun drawLayer(layer: RenderLayer, outW: Int, outH: Int) {
         val cx = (layer.left + layer.right) * 0.5f
         val cy = (layer.top + layer.bottom) * 0.5f
         val sx = layer.right - layer.left
@@ -378,6 +400,10 @@ class GlRenderer {
         Matrix.scaleM(trans, 0, sx, sy, 1f)
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, trans, 0)
         GLES20.glUniform1f(alphaScaleLoc, 1.0f)
+        GLES20.glUniform1f(cornerRadiusLoc, layer.cornerRadius)
+        // Box pixel aspect (w/h), so the shader keeps the rounded corners circular.
+        val boxAspect = if (sy * outH != 0f) (sx * outW) / (sy * outH) else 1f
+        GLES20.glUniform1f(rectAspectLoc, boxAspect)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, layer.textureId)
         GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, layer.texTransform, 0)
@@ -581,6 +607,10 @@ class GlRenderer {
         checkLocationOrThrow(texCoordLoc, "aTextureCoord")
         texMatrixLoc = GLES20.glGetUniformLocation(programHandle, "uTexMatrix")
         checkLocationOrThrow(texMatrixLoc, "uTexMatrix")
+        cornerRadiusLoc = GLES20.glGetUniformLocation(programHandle, "uCornerRadius")
+        checkLocationOrThrow(cornerRadiusLoc, "uCornerRadius")
+        rectAspectLoc = GLES20.glGetUniformLocation(programHandle, "uRectAspect")
+        checkLocationOrThrow(rectAspectLoc, "uRectAspect")
     }
 
     private fun useProgram() {
@@ -598,6 +628,8 @@ class GlRenderer {
         checkGlErrorOrThrow("glUniformMatrix4fv")
         GLES20.glUniform1f(alphaScaleLoc, 1.0f)
         checkGlErrorOrThrow("glUniform1f")
+        GLES20.glUniform1f(cornerRadiusLoc, 0.0f)   // square by default (single-camera / base layer)
+        GLES20.glUniform1f(rectAspectLoc, 1.0f)
 
         // Sampler -> texture unit 0.
         GLES20.glUniform1i(samplerLoc, 0)
@@ -735,6 +767,7 @@ class GlRenderer {
         GLES20.glEnableVertexAttribArray(texCoordLoc)
         GLES20.glVertexAttribPointer(texCoordLoc, 2, GLES20.GL_FLOAT, false, 0, texBuf)
         GLES20.glUniform1f(alphaScaleLoc, 1.0f)
+        GLES20.glUniform1f(cornerRadiusLoc, 0.0f)   // single-camera / frozen paths are square
         GLES20.glUniform1i(samplerLoc, 0)
         activateExternalTexture(externalTextureId)
     }
