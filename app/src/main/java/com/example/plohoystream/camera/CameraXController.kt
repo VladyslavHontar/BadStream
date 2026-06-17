@@ -230,6 +230,11 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
         onFailed: () -> Unit,
     ) {
         mainExecutor.execute {
+            // Cover the unavoidable dual-entry latency (CameraX close + cameras-free gate + opening
+            // two Camera2 devices) with the existing freeze-blur, exactly like a lens/camera switch:
+            // the encoded stream shows the blur and the preview holds its last frame during entry.
+            // No-op if no frame has been seen yet, so it's safe even on a cold first entry.
+            processor.beginTransition()
             val caps = _capabilities.value ?: run {
                 Log.w(TAG, "enterDual: concurrent caps not ready yet")
                 onFailed(); return@execute

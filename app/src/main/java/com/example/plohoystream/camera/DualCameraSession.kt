@@ -53,6 +53,27 @@ class DualCameraSession(
     @Volatile private var failedFired = false
     private var onFailedCb: () -> Unit = {}
 
+    // --- Bounded open/configure retry (FIX C) -------------------------------------------------
+    // On some MediaTek HALs, entering dual right after a single-mode tele session is still tearing
+    // down causes the {main+front} open to fail transiently. We retry the WHOLE open sequence a few
+    // times before giving up. Once both sessions are configured AND streaming we flip to LIVE; after
+    // that an onError is FATAL (no retry) to avoid reopen loops. All read/written on [cameraHandler].
+    @Volatile private var phase = Phase.IDLE
+    private var openAttempts = 0
+    // The full open arguments, kept so a delayed retry can re-run the open sequence verbatim.
+    private var openArgs: OpenArgs? = null
+    // The pending delayed-retry runnable, so stop() (user toggle-off) can cancel it.
+    private var pendingRetry: Runnable? = null
+
+    private enum class Phase { IDLE, OPENING, LIVE }
+
+    private data class OpenArgs(
+        val backId: String,
+        val frontId: String,
+        val backSurface: Surface,
+        val frontSurface: Surface,
+    )
+
     // State needed for the blink-free operations (switchBack / setZoom / swapPrimary). All camera
     // mutation runs on [cameraHandler]; these are read/written from there (start() runs on the caller
     // thread but only before the camera thread touches them).
@@ -94,6 +115,10 @@ class DualCameraSession(
         this.displayDeg = displayDeg
         this.zoomRatio = 1f
         this.currentSwapped = false
+        // A fresh external start() resets the retry counter and re-enters the OPENING phase.
+        openAttempts = 0
+        phase = Phase.OPENING
+        pendingRetry = null
 
         Log.i(TAG, "dual start primary=$primaryFacing back=$backId front=$frontId")
 
@@ -138,8 +163,57 @@ class DualCameraSession(
         val frontSurface = if (backIsPrimary) inputs.secondary else inputs.primary
         this.backSurface = backSurface
 
-        openDevice(backId, backSurface, handler, isBack = true)
-        openDevice(frontId, frontSurface, handler, isBack = false)
+        // Remember the open args so a transient-failure retry can re-run the open sequence verbatim.
+        openArgs = OpenArgs(backId, frontId, backSurface, frontSurface)
+        openDevicesForAttempt(handler)
+    }
+
+    /**
+     * Open BOTH devices for the current attempt. Called from [start] and from the delayed retry. The
+     * surfaces (input SurfaceTextures) are reused across attempts; only the Camera2 devices+sessions
+     * are reopened. Runs on the camera [handler].
+     */
+    private fun openDevicesForAttempt(handler: Handler) {
+        val args = openArgs ?: return
+        openDevice(args.backId, args.backSurface, handler, isBack = true)
+        openDevice(args.frontId, args.frontSurface, handler, isBack = false)
+    }
+
+    /**
+     * A device/session error/disconnect fired DURING the open-or-configure phase. Close any devices +
+     * sessions opened for this attempt (the input surfaces are kept) and, if we have retries left,
+     * post a delayed reopen on the camera [handler]; otherwise give up via [fail]. Runs on the camera
+     * thread. No-op once we're LIVE (those errors are routed to [failFatal] instead).
+     */
+    private fun retryOrFail() {
+        if (!started || phase != Phase.OPENING) return
+        val handler = cameraHandler ?: return
+        // Tear down whatever this attempt opened; reuse the input surfaces on the next attempt.
+        runCatching { backSession?.close() }
+        runCatching { frontSession?.close() }
+        backSession = null
+        frontSession = null
+        runCatching { backDevice?.close() }
+        runCatching { frontDevice?.close() }
+        backDevice = null
+        frontDevice = null
+        backRequestBuilder = null
+
+        val n = openAttempts + 1
+        if (n < MAX_OPEN_ATTEMPTS) {
+            openAttempts = n
+            Log.w(TAG, "dual open attempt $n failed, retrying")
+            val retry = Runnable {
+                pendingRetry = null
+                if (!started || phase != Phase.OPENING) return@Runnable
+                openDevicesForAttempt(handler)
+            }
+            pendingRetry = retry
+            handler.postDelayed(retry, RETRY_DELAY_MS)
+        } else {
+            Log.e(TAG, "dual open failed after $n attempts")
+            fail()
+        }
     }
 
     private fun sensorOrientation(id: String): Int =
@@ -190,20 +264,20 @@ class DualCameraSession(
             override fun onDisconnected(device: CameraDevice) {
                 Log.e(TAG, "device id=$id error=disconnected")
                 device.close()
-                fail()
+                onOpenPhaseError()
             }
 
             override fun onError(device: CameraDevice, error: Int) {
                 Log.e(TAG, "device id=$id error=$error")
                 device.close()
-                fail()
+                onOpenPhaseError()
             }
         }
         try {
             cameraManager.openCamera(id, callback, handler)
         } catch (e: Exception) {
             Log.e(TAG, "device id=$id error=open-exception", e)
-            fail()
+            onOpenPhaseError()
         }
     }
 
@@ -227,13 +301,25 @@ class DualCameraSession(
                     backRequestBuilder = builder
                     applyZoomLocked(builder, device.id, zoomRatio)
                 }
-                runCatching { session.setRepeatingRequest(builder.build(), null, handler) }
-                    .onFailure { Log.e(TAG, "device id=${device.id} error=repeating-request", it); fail() }
+                val ok = runCatching { session.setRepeatingRequest(builder.build(), null, handler) }
+                    .onFailure { Log.e(TAG, "device id=${device.id} error=repeating-request", it) }
+                    .isSuccess
+                if (!ok) {
+                    onOpenPhaseError()
+                    return
+                }
+                // Both devices opened AND both sessions configured + streaming → fully LIVE. After this
+                // an error is FATAL (no retry) to avoid reopen loops. A switchBack reopens only the
+                // back side while LIVE; that path is its own fatal-on-error open, not this retry path.
+                if (phase == Phase.OPENING && backSession != null && frontSession != null) {
+                    phase = Phase.LIVE
+                    pendingRetry = null
+                }
             }
 
             override fun onConfigureFailed(session: CameraCaptureSession) {
                 Log.e(TAG, "device id=${device.id} error=session-configure-failed")
-                fail()
+                onOpenPhaseError()
             }
         }
         try {
@@ -241,7 +327,7 @@ class DualCameraSession(
             device.createCaptureSession(listOf(target), callback, handler)
         } catch (e: Exception) {
             Log.e(TAG, "device id=${device.id} error=create-session-exception", e)
-            fail()
+            onOpenPhaseError()
         }
     }
 
@@ -345,6 +431,20 @@ class DualCameraSession(
         }
     }
 
+    /**
+     * Route an error/disconnect/configure-failure by phase (camera thread):
+     *  - OPENING (not yet fully streaming) → bounded retry of the open sequence ([retryOrFail]).
+     *  - LIVE (both sessions configured + streaming) → FATAL: tear down + fall back, NO retry, so a
+     *    runtime device error can't trigger an endless reopen loop.
+     */
+    private fun onOpenPhaseError() {
+        if (!started) return
+        when (phase) {
+            Phase.OPENING -> retryOrFail()
+            else -> fail()   // LIVE (or IDLE) → fatal
+        }
+    }
+
     /** Tear down on an open/configure failure, then invoke the caller's fallback exactly once. */
     private fun fail() {
         if (failedFired) return
@@ -358,6 +458,13 @@ class DualCameraSession(
     fun stop() {
         if (!started) return
         started = false
+
+        // Cancel any pending open-retry so a user toggle-off (or external restart) doesn't reopen.
+        pendingRetry?.let { r -> cameraHandler?.removeCallbacks(r) }
+        pendingRetry = null
+        phase = Phase.IDLE
+        openArgs = null
+        openAttempts = 0
 
         runCatching { backSession?.close() }
         runCatching { frontSession?.close() }
@@ -384,5 +491,9 @@ class DualCameraSession(
 
     private companion object {
         const val TAG = "DualCameraSession"
+        // Bounded open/configure retry: up to MAX_OPEN_ATTEMPTS total opens, ~RETRY_DELAY_MS apart,
+        // to ride out a transient HAL teardown conflict (e.g. tele session still closing) on entry.
+        const val MAX_OPEN_ATTEMPTS = 3
+        const val RETRY_DELAY_MS = 350L
     }
 }

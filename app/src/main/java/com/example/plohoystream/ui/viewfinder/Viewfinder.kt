@@ -488,6 +488,13 @@ fun Viewfinder(viewModel: StreamViewModel) {
                                     lastDualScene = scene                       // preserve PiP layout
                                     com.example.plohoystream.camera.scene.Scene.SINGLE
                                 } else {
+                                    // Turning dual ON: keep whichever camera is the current single main
+                                    // frame as the dual PRIMARY (big view) so the OTHER goes to the PiP.
+                                    // [dualPrimary] is never synced to [facing] elsewhere, so without
+                                    // this, entering dual while on FRONT would wrongly keep BACK primary
+                                    // and put FRONT in the PiP. The binding LaunchedEffect reads
+                                    // [dualPrimary] for enterDual(primaryFacing = ...).
+                                    dualPrimary = facing
                                     lastDualScene
                                 }
                             },
