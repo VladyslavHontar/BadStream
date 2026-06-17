@@ -107,8 +107,6 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     val capabilities: StateFlow<ConcurrentCameraCapabilities?> = _capabilities.asStateFlow()
     private var dualSession: DualCameraSession? = null
     private var dualScene: com.example.plohoystream.camera.scene.Scene? = null
-    // The facing currently routed to the PRIMARY (big) view in dual; null when not in dual.
-    private var dualPrimaryFacing: Facing? = null
     // The back lens currently bound as the dual back source (for classifying chip taps). Defaults to
     // the 1x main; updated on a REAL switchBack.
     private var dualBackLens: BackLens? = null
@@ -198,7 +196,6 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             pendingStart = false
             lastConfig = null
             lastTargets = emptyList()
-            dualPrimaryFacing = null
             dualScene = null
             dualBackLens = null
             camera = null
@@ -250,7 +247,6 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             // Release any CameraX binding first; the processor's standalone mode owns the surfaces.
             runCatching { provider?.unbindAll() }
             camera = null
-            dualPrimaryFacing = primaryFacing
             dualScene = scene
             // The dual back source starts on the default-back lens (the 1x main).
             dualBackLens = caps.backLenses.firstOrNull { it.id == backId }
@@ -279,7 +275,6 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     fun exitDual() {
         mainExecutor.execute {
             dualSession?.stop()
-            dualPrimaryFacing = null
             dualScene = null
             dualBackLens = null
         }
@@ -288,7 +283,6 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     /** Instant dual swap (no device/session reopen): relabel which open camera is the big view. */
     fun dualSwap(primaryFacing: Facing) {
         mainExecutor.execute {
-            dualPrimaryFacing = primaryFacing
             dualSession?.swapPrimary(primaryFacing)
         }
     }

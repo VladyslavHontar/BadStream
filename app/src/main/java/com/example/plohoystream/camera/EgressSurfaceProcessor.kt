@@ -96,7 +96,6 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     // Direct render targets in standalone mode (preview + encoder). GL-thread-only mutation/iteration.
     private val standaloneOutputs = LinkedHashSet<Surface>()
     private var standalonePreview: Surface? = null
-    private var standaloneEncoder: Surface? = null
     // Surface wrappers around the standalone input SurfaceTextures. GL-thread-only. Must be released
     // on teardown alongside their SurfaceTextures (the single-mode path in onInputSurface releases
     // both in its provideSurface callback; standalone has no such callback, so we track them here).
@@ -488,17 +487,21 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             onSecondaryAspect?.invoke(aspect)
 
             standalonePreview = null
-            standaloneEncoder = null
             standaloneOutputs.clear()
             if (preview != null) {
                 renderer.registerOutputSurface(preview)
                 standaloneOutputs.add(preview)
                 standalonePreview = preview
             }
-            if (encoder != null) {
-                renderer.registerOutputSurface(encoder)
-                standaloneOutputs.add(encoder)
-                standaloneEncoder = encoder
+            // The encoder is MODE-AGNOSTIC: it is owned solely by [encoderSurface]/[setEncoderSurface]
+            // and is NOT tracked in standaloneOutputs. We're already on the GL thread, so inline the
+            // setEncoderSurface logic here (re-registering only if it changed) so the SAME encoder
+            // stays registered across single<->dual transitions. stopStandalone must never unregister
+            // it; that's setEncoderSurface's job.
+            if (encoder !== encoderSurface) {
+                encoderSurface?.let { renderer.unregisterOutputSurface(it) }
+                encoderSurface = encoder
+                encoder?.let { renderer.registerOutputSurface(it) }
             }
 
             standalone = true
@@ -534,36 +537,19 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         })
     }
 
-    /** Swap the standalone encoder target (null = stop streaming/recording). On the GL thread. */
-    fun setStandaloneEncoder(surface: Surface?) {
-        if (isReleaseRequested.get()) return
-        executeSafely({
-            if (!standalone) return@executeSafely
-            val previous = standaloneEncoder
-            if (previous === surface) return@executeSafely
-            if (previous != null) {
-                standaloneOutputs.remove(previous)
-                renderer.unregisterOutputSurface(previous)
-            }
-            standaloneEncoder = surface
-            if (surface != null) {
-                renderer.registerOutputSurface(surface)
-                standaloneOutputs.add(surface)
-            }
-        })
-    }
-
     /** Leave standalone-dual mode: release both input textures + their Surfaces, drop all standalone
      *  outputs. On the GL thread. The CameraX path becomes active again. */
     fun stopStandalone() {
         if (isReleaseRequested.get()) return
         executeSafely({
+            // Unregister ONLY the standalone preview outputs. The encoder is mode-agnostic (owned by
+            // encoderSurface/setEncoderSurface); leaving it registered keeps the stream alive across
+            // the dual->single transition and avoids the "surface is not registered" render failure.
             for (surface in standaloneOutputs) {
                 renderer.unregisterOutputSurface(surface)
             }
             standaloneOutputs.clear()
             standalonePreview = null
-            standaloneEncoder = null
             primaryTexture?.let { st ->
                 st.setOnFrameAvailableListener(null)
                 st.release()
@@ -598,6 +584,15 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 renderer.renderScene(ts, buildLayersStandalone(surface), surface)
             } catch (e: RuntimeException) {
                 Log.e(TAG, "standalone composite failed", e)
+            }
+        }
+        // The encoder lives outside standaloneOutputs (mode-agnostic; owned by encoderSurface), so
+        // render the composite to it explicitly when streaming in dual.
+        encoderSurface?.let { enc ->
+            try {
+                renderer.renderScene(ts, buildLayersStandalone(enc), enc)
+            } catch (e: RuntimeException) {
+                Log.e(TAG, "standalone encoder render failed", e)
             }
         }
     }
@@ -722,6 +717,9 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 output.close()
             }
             outputSurfaces.clear()
+            // Unregister the mode-agnostic encoder once (renderer.release() below also tears down all
+            // GL window surfaces, but unregistering keeps the bookkeeping balanced).
+            encoderSurface?.let { renderer.unregisterOutputSurface(it) }
             encoderSurface = null
             // Standalone-dual teardown: unregister the direct outputs and release the input textures
             // + their Surfaces (these never go through inputSurfaceCount / the CameraX provideSurface
@@ -731,7 +729,6 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             }
             standaloneOutputs.clear()
             standalonePreview = null
-            standaloneEncoder = null
             primaryTexture?.let { st ->
                 st.setOnFrameAvailableListener(null)
                 st.release()
