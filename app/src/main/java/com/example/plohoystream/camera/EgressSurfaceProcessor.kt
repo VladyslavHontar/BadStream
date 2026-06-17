@@ -193,12 +193,12 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             secondaryTexture = st
             // Tell the UI the secondary's displayed aspect (post-rotation) so it can size the PiP
             // box to the source and avoid cropping.
-            val rot = com.example.plohoystream.camera.scene.DisplayTransform
-                .netRotationDegrees(secondarySensorDeg, displayDeg, secondaryIsFront)
-            onSecondaryAspect?.invoke(
-                com.example.plohoystream.camera.scene.DisplayTransform
-                    .displayedAspect(secondarySrcW, secondarySrcH, rot),
-            )
+            // The secondary arrives upright at its NATIVE frame aspect: CameraX bakes the
+            // sensor→display rotation into the SurfaceTexture transform, and our orientation matrix
+            // is calibrated so the net rotation is aspect-preserving (the face is upright while the
+            // frame stays e.g. 4:3). So the PiP box matches the source's native w/h — no swap.
+            val aspect = if (secondarySrcH > 0) secondarySrcW.toFloat() / secondarySrcH else 1f
+            onSecondaryAspect?.invoke(aspect)
             val sfc = Surface(st)
             request.provideSurface(sfc, glExecutor) {
                 st.setOnFrameAvailableListener(null)
@@ -371,8 +371,8 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                         layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
                     )
                 com.example.plohoystream.camera.scene.SourceId.SECONDARY -> {
-                    val rot = dt.netRotationDegrees(secondarySensorDeg, displayDeg, secondaryIsFront)
-                    val contentAspect = dt.displayedAspect(secondarySrcW, secondarySrcH, rot)
+                    // Content is displayed at the source's native aspect (see provideSecondarySurface).
+                    val contentAspect = if (secondarySrcH > 0) secondarySrcW.toFloat() / secondarySrcH else 1f
                     val rectAspect = (layer.rect.width * outAspect) / layer.rect.height
                     val (cropX, cropY) = dt.coverCrop(contentAspect, rectAspect)
                     val orient = dt.matrix(secondarySensorDeg, displayDeg, secondaryIsFront, cropX, cropY)

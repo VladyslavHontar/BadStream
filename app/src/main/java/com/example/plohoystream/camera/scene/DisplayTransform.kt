@@ -6,33 +6,27 @@ import android.opengl.Matrix
  * Orientation + crop math for compositing a camera source whose frames arrive WITHOUT CameraX's
  * display-correcting [androidx.camera.core.SurfaceOutput] transform (the dual-mode secondary).
  *
- * [netRotationDegrees], [displayedAspect] and [coverCrop] are pure and unit-tested. [matrix]
- * assembles the 4x4 texture-coordinate transform with [android.opengl.Matrix] (not available in
- * unit tests) and is verified on-device — it is the documented composition of those tested pieces.
+ * [netRotationDegrees] and [coverCrop] are pure and unit-tested. [matrix] assembles the 4x4
+ * texture-coordinate transform with [android.opengl.Matrix] (not available in unit tests) and is
+ * verified on-device — it is the documented composition of those tested pieces.
+ *
+ * Note on aspect: the PiP box is sized to the secondary's NATIVE frame aspect (srcW/srcH), NOT a
+ * rotation-swapped one — CameraX bakes the sensor→display rotation into the SurfaceTexture transform,
+ * so combined with [matrix]'s calibrated rotation the net is aspect-preserving (content upright, frame
+ * aspect unchanged). See EgressSurfaceProcessor.provideSecondarySurface.
  */
 object DisplayTransform {
 
     /**
      * Clockwise degrees to rotate the sampled sensor image upright on the display, for a camera fed
-     * RAW into the compositor (no CameraX SurfaceOutput transform). Back: `(sensor - display - 90)`,
-     * Front: `(sensor + display - 90)`. Both carry a common `-90` device/texture offset (the secondary
-     * SurfaceTexture arrives a quarter-turn from upright); front flips the display sign because of its
-     * horizontal mirror. Calibrated on-device at display ROTATION_90: back sensor 90 → 270 (90° CCW),
-     * front sensor 270 → 270, both upright. All normalized to 0..359.
+     * RAW into the compositor (no CameraX SurfaceOutput transform): `(sensor + display - 90)`,
+     * normalized to 0..359. Calibrated on-device at display ROTATION_90 (front sensor 270 → 270, back
+     * sensor 90 → 90; both upright). The front horizontal mirror is applied separately in [matrix] and
+     * does not change this value. [isFront] is retained for call-site clarity.
      */
     fun netRotationDegrees(sensorDeg: Int, displayDeg: Int, isFront: Boolean): Int {
         val raw = sensorDeg + displayDeg - 90
         return ((raw % 360) + 360) % 360
-    }
-
-    /** Width/height the source presents after a quarter-turn of [rotationDeg] (from
-     *  [netRotationDegrees]); 90/270 swap W and H. Returns 1f for a not-yet-known (non-positive)
-     *  size, so a startup frame can't push NaN/Inf into the GPU before the camera reports a size. */
-    fun displayedAspect(srcW: Int, srcH: Int, rotationDeg: Int): Float {
-        if (srcW <= 0 || srcH <= 0) return 1f
-        val w = srcW.toFloat()
-        val h = srcH.toFloat()
-        return if (rotationDeg == 90 || rotationDeg == 270) h / w else w / h
     }
 
     /** Texture-coord scale (cropX, cropY) about center to COVER a rect of [rectAspect] (w/h) with

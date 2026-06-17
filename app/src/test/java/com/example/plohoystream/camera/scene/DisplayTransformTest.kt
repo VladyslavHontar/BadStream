@@ -40,10 +40,4 @@ class DisplayTransformTest {
         assertEquals(1f, cy, eps)
     }
 
-    @Test fun displayedAspect_swapsOnQuarterTurns() {
-        assertEquals(640f / 360f, DisplayTransform.displayedAspect(640, 360, rotationDeg = 0), eps)
-        assertEquals(360f / 640f, DisplayTransform.displayedAspect(640, 360, rotationDeg = 90), eps)
-        assertEquals(360f / 640f, DisplayTransform.displayedAspect(640, 360, rotationDeg = 270), eps)
-        assertEquals(640f / 360f, DisplayTransform.displayedAspect(640, 360, rotationDeg = 180), eps)
-    }
 }
