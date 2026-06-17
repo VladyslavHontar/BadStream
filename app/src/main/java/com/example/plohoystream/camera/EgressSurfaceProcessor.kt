@@ -36,23 +36,37 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         const val METER_EVERY = 6   // sample luma every Nth frame (~5Hz at 30fps) for Auto-ISO
     }
 
-    // Dual-camera (PiP) state. The secondary SurfaceTexture is bound to the renderer's 2nd texture;
-    // the primary drives the composite using the secondary's latest frame. Layout is fixed here
-    // (default); a later plan makes it adjustable.
-    @Volatile private var dualMode = false
+    // Scene compositor state. The scene (single source of truth for preview + stream) and the
+    // secondary camera's orientation are pushed in from the controller; read on the GL thread.
+    @Volatile private var scene: com.example.plohoystream.camera.scene.Scene =
+        com.example.plohoystream.camera.scene.Scene.SINGLE
     private var primaryTexture: SurfaceTexture? = null
     private var secondaryTexture: SurfaceTexture? = null
-    private val secondaryTransform = FloatArray(16)
+    private val secondaryRawTransform = FloatArray(16)
     @Volatile private var secondarySrcW = 0
     @Volatile private var secondarySrcH = 0
-    @Volatile private var pipLayout = com.example.plohoystream.camera.PipLayout()
+    @Volatile private var secondarySensorDeg = 0
+    @Volatile private var secondaryIsFront = true
+    @Volatile private var displayDeg = 0
 
-    fun setDualMode(on: Boolean) {
+    /** Replace the composited scene (live; safe from any thread). >1 layer engages the compositor. */
+    fun setScene(newScene: com.example.plohoystream.camera.scene.Scene) {
         executeSafely({
-            dualMode = on
-            if (!on) { primaryTexture = null; secondaryTexture = null }
+            scene = newScene
+            if (!newScene.isDual) { primaryTexture = null; secondaryTexture = null }
         })
     }
+
+    /** Orientation inputs for the SECONDARY (PiP) source's derived transform. Set at dual bind. */
+    fun setDualConfig(sensorDeg: Int, isFront: Boolean, displayDegrees: Int) {
+        executeSafely({
+            secondarySensorDeg = sensorDeg
+            secondaryIsFront = isFront
+            displayDeg = displayDegrees
+        })
+    }
+
+    private val dualMode: Boolean get() = scene.isDual
 
     /** When true, [onLuma] is invoked ~5Hz with the average frame luma (0..1) for Auto-ISO. */
     @Volatile var meteringEnabled = false
@@ -183,7 +197,7 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 if (isReleaseRequested.get()) return@setOnFrameAvailableListener
                 try {
                     s.updateTexImage()
-                    s.getTransformMatrix(secondaryTransform)
+                    s.getTransformMatrix(secondaryRawTransform)
                 } catch (e: RuntimeException) {
                     Log.w(TAG, "secondary updateTexImage failed (producer torn down?)", e)
                 }
@@ -273,19 +287,18 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         }
 
         if (dualMode && primaryTexture != null && secondaryTexture != null) {
-            val r = com.example.plohoystream.camera.PipLayout.pipRect(pipLayout)
             for ((output, surface) in outputSurfaces) {
                 output.updateTransformMatrix(surfaceOutputTransform, textureTransform)
                 System.arraycopy(surfaceOutputTransform, 0, encoderTransform, 0, 16)
                 hasEncoderTransform = true
                 try {
-                    renderer.renderComposite(timestampNs, surfaceOutputTransform, secondaryTransform, r.left, r.top, r.right, r.bottom, secondarySrcW, secondarySrcH, surface)
+                    renderer.renderScene(timestampNs, buildLayers(surfaceOutputTransform, surface), surface)
                 } catch (e: RuntimeException) { Log.e(TAG, "composite preview render failed", e) }
             }
             encoderSurface?.let { surface ->
-                val transform = if (hasEncoderTransform) encoderTransform else textureTransform
+                val primaryTransform = if (hasEncoderTransform) encoderTransform else textureTransform
                 try {
-                    renderer.renderComposite(timestampNs, transform, secondaryTransform, r.left, r.top, r.right, r.bottom, secondarySrcW, secondarySrcH, surface)
+                    renderer.renderScene(timestampNs, buildLayers(primaryTransform, surface), surface)
                 } catch (e: RuntimeException) { Log.e(TAG, "composite encoder render failed", e) }
             }
             return
@@ -322,6 +335,41 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         if (meteringEnabled) {
             if (meterFrameCount++ % METER_EVERY == 0) {
                 onLuma?.let { cb -> runCatching { renderer.meterLuma(textureTransform) }.getOrNull()?.let(cb) }
+            }
+        }
+    }
+
+    /**
+     * Map the current [scene] to GL layers for [surface]. PRIMARY uses CameraX's display-correct
+     * [primaryTransform] (full-frame, no extra crop). SECONDARY uses the derived orientation+mirror
+     * transform composed with its raw SurfaceTexture transform, plus a cover-crop for its PiP rect.
+     */
+    private fun buildLayers(
+        primaryTransform: FloatArray,
+        surface: Surface,
+    ): List<GlRenderer.RenderLayer> {
+        val dt = com.example.plohoystream.camera.scene.DisplayTransform
+        val outAspect = renderer.outputAspect(surface)
+        return scene.ordered().mapNotNull { layer ->
+            when (layer.source) {
+                com.example.plohoystream.camera.scene.SourceId.PRIMARY ->
+                    GlRenderer.RenderLayer(
+                        renderer.textureName, primaryTransform,
+                        layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
+                    )
+                com.example.plohoystream.camera.scene.SourceId.SECONDARY -> {
+                    val rot = dt.netRotationDegrees(secondarySensorDeg, displayDeg, secondaryIsFront)
+                    val contentAspect = dt.displayedAspect(secondarySrcW, secondarySrcH, rot)
+                    val rectAspect = (layer.rect.width * outAspect) / layer.rect.height
+                    val (cropX, cropY) = dt.coverCrop(contentAspect, rectAspect)
+                    val orient = dt.matrix(secondarySensorDeg, displayDeg, secondaryIsFront, cropX, cropY)
+                    val tex = FloatArray(16)
+                    android.opengl.Matrix.multiplyMM(tex, 0, orient, 0, secondaryRawTransform, 0)
+                    GlRenderer.RenderLayer(
+                        renderer.textureName2, tex,
+                        layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
+                    )
+                }
             }
         }
     }

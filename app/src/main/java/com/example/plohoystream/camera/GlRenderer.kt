@@ -328,18 +328,23 @@ class GlRenderer {
     }
 
     /**
-     * Composite two camera textures to [surface]: [primaryTransform]/[secondaryTransform] are the
-     * respective SurfaceTexture transforms; [pipLeft..pipBottom] is the inset rectangle in normalized
-     * frame coords (0..1, origin top-left). Primary fills the frame; secondary draws into the inset.
+     * One composited layer: an OES [textureId] sampled through [texTransform] (already including
+     * orientation, mirror and cover-crop), drawn into the normalized rect [left,top,right,bottom]
+     * (0..1, origin top-left). Z-order is the list order passed to [renderScene].
+     *
+     * A plain class, not a `data class`: instances are built per-frame and only ever read, never
+     * compared/copied/hashed — and reference-based equality on the [texTransform] array would be a
+     * footgun if it ever were.
      */
-    fun renderComposite(
-        timestampNs: Long,
-        primaryTransform: FloatArray,
-        secondaryTransform: FloatArray,
-        pipLeft: Float, pipTop: Float, pipRight: Float, pipBottom: Float,
-        secSrcW: Int, secSrcH: Int,
-        surface: Surface,
-    ) {
+    class RenderLayer(
+        val textureId: Int,
+        val texTransform: FloatArray,
+        val left: Float, val top: Float, val right: Float, val bottom: Float,
+    )
+
+    /** Composite [layers] (in order) into [surface]. Each layer is positioned by its rect and
+     *  textured by its transform; the base layer (full rect) covers the frame. Swaps once. */
+    fun renderScene(timestampNs: Long, layers: List<RenderLayer>, surface: Surface) {
         checkInitialized(); checkGlThread()
         var outputSurface = getOutSurfaceOrThrow(surface)
         if (outputSurface === NO_OUTPUT_SURFACE) {
@@ -350,58 +355,40 @@ class GlRenderer {
         makeCurrent(outputSurface.eglSurface)
         currentSurface = surface
         GLES20.glViewport(0, 0, outputSurface.width, outputSurface.height)
-
-        // 1) Primary, full-frame.
-        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
-        GLES20.glUniform1f(alphaScaleLoc, 1.0f)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
-        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, primaryTransform, 0)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
-        // 2) Secondary fills the PiP box (a landscape inset). The front camera is rotated 90° CCW to
-        //    upright (which makes the content portrait), then CENTER-CROPPED to fill the landscape box
-        //    without stretching — overflow is cropped, not letterboxed. Quad = the full box.
-        val outW = outputSurface.width.toFloat()
-        val outH = outputSurface.height.toFloat()
-        val cx = (pipLeft + pipRight) * 0.5f
-        val cy = (pipTop + pipBottom) * 0.5f
-        val sx = (pipRight - pipLeft)
-        val sy = (pipBottom - pipTop)
-        val pipMatrix = FloatArray(16)
-        Matrix.setIdentityM(pipMatrix, 0)
-        Matrix.translateM(pipMatrix, 0, 2f * cx - 1f, 1f - 2f * cy, 0f)
-        Matrix.scaleM(pipMatrix, 0, sx, sy, 1f)
-        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, pipMatrix, 0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId2)
-
-        // Box pixel aspect vs the content's aspect AFTER the 90° rotation (display W/H = srcH/srcW).
-        // Crop the overflow axis so the rotated content covers the box undistorted (cover, not fit).
-        val boxAspect = (sx * outW) / (sy * outH)
-        val contentAspect = if (secSrcW > 0 && secSrcH > 0) secSrcH.toFloat() / secSrcW.toFloat() else 1f
-        var cropX = 1f
-        var cropY = 1f
-        if (boxAspect > contentAspect) cropY = contentAspect / boxAspect else cropX = boxAspect / contentAspect
-        // Rotate the IMAGE 90° CCW (tex coords -90° about centre) and crop-scale about the same centre.
-        val secRot = FloatArray(16)
-        Matrix.setIdentityM(secRot, 0)
-        Matrix.translateM(secRot, 0, 0.5f, 0.5f, 0f)
-        Matrix.rotateM(secRot, 0, -90f, 0f, 0f, 1f)
-        Matrix.scaleM(secRot, 0, cropX, cropY, 1f)
-        Matrix.translateM(secRot, 0, -0.5f, -0.5f, 0f)
-        val secTex = FloatArray(16)
-        Matrix.multiplyMM(secTex, 0, secRot, 0, secondaryTransform, 0)
-        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, secTex, 0)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
+        for (layer in layers) drawLayer(layer)
         // Restore defaults for the next single-camera render()/frozen path.
         GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, identityMatrix, 0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
-
         EGLExt.eglPresentationTimeANDROID(eglDisplay, outputSurface.eglSurface, timestampNs)
         if (!EGL14.eglSwapBuffers(eglDisplay, outputSurface.eglSurface)) {
             removeOutputSurfaceInternal(surface, false)
         }
+    }
+
+    /** Place [layer]'s rect via uTransMatrix (NDC), bind its texture, draw the strip. */
+    private fun drawLayer(layer: RenderLayer) {
+        val cx = (layer.left + layer.right) * 0.5f
+        val cy = (layer.top + layer.bottom) * 0.5f
+        val sx = layer.right - layer.left
+        val sy = layer.bottom - layer.top
+        val trans = FloatArray(16)
+        Matrix.setIdentityM(trans, 0)
+        // Normalized rect (origin top-left) -> NDC: x in [-1,1], y flipped (top-left -> +y up).
+        Matrix.translateM(trans, 0, 2f * cx - 1f, 1f - 2f * cy, 0f)
+        Matrix.scaleM(trans, 0, sx, sy, 1f)
+        GLES20.glUniformMatrix4fv(transMatrixLoc, 1, false, trans, 0)
+        GLES20.glUniform1f(alphaScaleLoc, 1.0f)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, layer.textureId)
+        GLES20.glUniformMatrix4fv(texMatrixLoc, 1, false, layer.texTransform, 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    /** Width/height of [surface]'s output (1f if it has no live EGL surface yet). */
+    fun outputAspect(surface: Surface): Float {
+        val out = outputSurfaceMap[surface]
+        return if (out == null || out === NO_OUTPUT_SURFACE || out.height == 0) 1f
+        else out.width.toFloat() / out.height.toFloat()
     }
 
     /**
