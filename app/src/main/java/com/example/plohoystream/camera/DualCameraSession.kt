@@ -128,20 +128,31 @@ class DualCameraSession(
 
     /**
      * Pick a capture [Size] for camera [id] from its supported SurfaceTexture output sizes: the
-     * largest-area size whose height ≤ 720 (the certified concurrent ≤720p guarantee). Falls back to
-     * the smallest available if none qualify. Preserves the sensor's NATIVE aspect (e.g. a 4:3 front
-     * sensor → 640x480/960x720), so the composite + PiP box report the true aspect.
+     * size whose aspect ratio is CLOSEST to the sensor's native aspect (from SENSOR_INFO_ACTIVE_ARRAY_SIZE),
+     * constrained to height ≤ 720 (the certified concurrent ≤720p guarantee). Ties broken by larger area.
+     * Falls back to the smallest-area candidate overall if none qualify at ≤720p.
+     * Preserves the sensor's NATIVE aspect (e.g. a 4:3 front sensor → 640x480/960x720),
+     * so the composite + PiP box report the true aspect.
      */
     private fun captureSizeFor(id: String): Size {
-        val sizes = runCatching {
-            cameraManager.getCameraCharacteristics(id)
-                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
-        }.getOrNull()?.toList().orEmpty()
-        val chosen = sizes.filter { it.height <= 720 }.maxByOrNull { it.width.toLong() * it.height }
-            ?: sizes.minByOrNull { it.width.toLong() * it.height }
-            ?: Size(1280, 720)
-        Log.i(TAG, "capture id=$id size=${chosen.width}x${chosen.height}")
+        val chars = runCatching { cameraManager.getCameraCharacteristics(id) }.getOrNull()
+            ?: return Size(640, 480)
+        val arr = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val nativeAspect = if (arr != null && arr.height() > 0) arr.width().toFloat() / arr.height() else 4f / 3f
+        val sizes = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
+            ?.toList().orEmpty()
+        if (sizes.isEmpty()) return Size(640, 480)
+        val candidates = sizes.filter { it.height <= 720 }
+        val chosen = if (candidates.isNotEmpty()) {
+            candidates.minWithOrNull(
+                compareBy({ Math.abs(it.width.toFloat() / it.height - nativeAspect) },
+                          { -(it.width.toLong() * it.height) })
+            )!!
+        } else {
+            sizes.minByOrNull { it.width.toLong() * it.height }!!
+        }
+        Log.i("DualCameraSession", "capture id=$id size=${chosen.width}x${chosen.height} nativeAspect=$nativeAspect")
         return chosen
     }
 
