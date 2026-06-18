@@ -119,6 +119,9 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     // Direct render targets in standalone mode (preview + encoder). GL-thread-only mutation/iteration.
     private val standaloneOutputs = LinkedHashSet<Surface>()
     private var standalonePreview: Surface? = null
+    // Logged once per dual entry on the first composite, to confirm on-device that the preview is
+    // attached (outputs>=1) and standalone frames are flowing.
+    @Volatile private var firstStandaloneComposite = false
     // Surface wrappers around the standalone input SurfaceTextures. GL-thread-only. Must be released
     // on teardown alongside their SurfaceTextures (the single-mode path in onInputSurface releases
     // both in its provideSurface callback; standalone has no such callback, so we track them here).
@@ -525,19 +528,19 @@ class EgressSurfaceProcessor : SurfaceProcessor {
 
             standalonePreview = null
             standaloneOutputs.clear()
-            // Connect standalone's preview output to the on-screen Surface ONLY after CameraX has
-            // released its producer slot on that same Surface (single mode's preview SurfaceOutput).
-            // The on-screen preview is ONE Surface backed by ONE BufferQueue with ONE producer slot;
-            // attaching standalone's EGL window surface while CameraX is still connected makes
-            // eglCreateWindowSurface fail with EGL_BAD_ALLOC. We DEFER the preview registration on the
-            // GL handler until previewOutputHeld clears (bounded), so the input Surfaces below return
-            // immediately and the encoder/standalone composite can start streaming a moment before the
-            // preview attaches. attachStandalonePreview() also does an explicit unregister-then-register
-            // (defect A) to deterministically free the renderer's OWN kept-alive EGL window surface for
-            // this exact Surface — this makes back-main and front/tele entries behave identically and
-            // serves as the fallback if the barrier budget expires.
+            // Attach standalone's preview output to the on-screen Surface SYNCHRONOUSLY (we're already
+            // on the GL thread). It must be in standaloneOutputs before the first onPrimaryFrame so the
+            // composite renders to the on-screen preview from frame one (a deferred attach left the
+            // preview unattached → frozen). The explicit unregister-then-register (defect A)
+            // deterministically frees the renderer's OWN kept-alive EGL window surface for this exact
+            // Surface before the first standalone render lazily recreates it — making back-main and
+            // front/tele entries behave identically.
+            firstStandaloneComposite = true
             if (preview != null) {
-                schedulePreviewAttach(preview, 0)
+                renderer.unregisterOutputSurface(preview)   // (A) free any kept-alive EGL surface for this Surface
+                renderer.registerOutputSurface(preview)     // lazy: recreated on first standalone render
+                standaloneOutputs.add(preview)
+                standalonePreview = preview
             }
             // The encoder is MODE-AGNOSTIC: it is owned solely by [encoderSurface]/[setEncoderSurface]
             // and is NOT tracked in standaloneOutputs. We're already on the GL thread, so inline the
@@ -667,6 +670,10 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             return
         }
         val ts = st.timestamp
+        if (firstStandaloneComposite) {
+            firstStandaloneComposite = false
+            Log.i(TAG, "standalone first composite (outputs=${standaloneOutputs.size}, encoder=${encoderSurface != null})")
+        }
         for (surface in standaloneOutputs) {
             try {
                 renderer.renderScene(ts, buildLayersStandalone(surface), surface)
