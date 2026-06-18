@@ -394,8 +394,16 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             val openBack = dualBackLens ?: chipBl
             when (caps.dualClass(chipBl, openBack, frontId)) {
                 DualClass.REAL -> {
-                    dualBackLens = chipBl
-                    dualSession?.switchBack(lens.physicalId)
+                    if (chipBl.id == dualBackLens?.id) {
+                        // Already the bound back sensor (e.g. tapping 1× while on the main): a
+                        // switchBack would be a no-op, so it would never undo a prior digital zoom.
+                        // Reset the digital zoom to this sensor's native framing (its intrinsic ratio)
+                        // so tapping the current chip actually returns to it (e.g. 1.8×→tap 1×→back to 1×).
+                        dualSession?.setZoom(lens.zoomRatio)
+                    } else {
+                        dualBackLens = chipBl
+                        dualSession?.switchBack(lens.physicalId)
+                    }
                 }
                 DualClass.ZOOM -> dualSession?.setZoom(lens.zoomRatio)
                 DualClass.UNAVAILABLE -> {
