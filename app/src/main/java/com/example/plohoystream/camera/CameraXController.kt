@@ -247,6 +247,12 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             // would otherwise resume and race CameraX's preview-SurfaceOutput teardown → EGL_BAD_ALLOC.
             // Cleared by startStandaloneDual (dual up) or onInputSurface/start (single rebind on fail).
             processor.setEnteringDual(true)
+            // Reset the PiP aspect to a sentinel so the secondary's real aspect (emitted by the
+            // processor once its frames size is known) is ALWAYS a fresh value -> the viewfinder's
+            // aspect LaunchedEffect re-fires and re-shapes the PiP box on every dual entry. Without
+            // this, re-entering dual when the flow still held the prior aspect would not re-emit, and
+            // the box would keep the default (16:9 region) aspect instead of the source's (e.g. 4:3).
+            _secondaryPipAspect.value = 0f
             val caps = _capabilities.value ?: run {
                 Log.w(TAG, "enterDual: concurrent caps not ready yet")
                 onFailed(); return@execute

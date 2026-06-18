@@ -220,7 +220,7 @@ fun Viewfinder(viewModel: StreamViewModel) {
     // aspect resolves (bind/swap) or dual turns on — not on every drag, so it never fights gestures.
     // regionAspect is the GL output (16:9 camera surface) the composite renders into.
     LaunchedEffect(pipAspect, dualOn, config) {
-        if (!dualOn) return@LaunchedEffect
+        if (!dualOn || pipAspect <= 0f) return@LaunchedEffect   // 0f = sentinel before the source aspect resolves
         val region = config?.let { it.previewSize.width.toFloat() / it.previewSize.height } ?: (16f / 9f)
         scene = scene.updateLayer(com.example.plohoystream.camera.scene.SourceId.SECONDARY) {
             com.example.plohoystream.camera.scene.SceneEdits.setAspect(it, region, pipAspect)
