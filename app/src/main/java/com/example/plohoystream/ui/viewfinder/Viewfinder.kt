@@ -86,6 +86,11 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val selectedLensFlow = remember(controller) {
         (controller as? CameraXController)?.selectedPhysicalId ?: MutableStateFlow<String?>(null)
     }
+    // The back sensor bound as the dual back source (drives the active-chip highlight in dual).
+    val dualBackLensIdFlow = remember(controller) {
+        (controller as? CameraXController)?.dualBackLensId ?: MutableStateFlow<String?>(null)
+    }
+    val dualBackLensId by dualBackLensIdFlow.collectAsStateWithLifecycle()
     // Manual exposure (shutter for motion blur + ISO). Panel toggled by a button over the preview.
     val exposureFlow = remember(controller) {
         (controller as? CameraXController)?.exposure
@@ -465,18 +470,15 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             onSelectLens = { lens ->
                                 val cx = controller as? CameraXController
                                 if (dualOn && cx != null) {
-                                    // Dual: route through the chip classifier (REAL switchBack / ZOOM /
-                                    // UNAVAILABLE → exit-dual request). The controller builds the chip
-                                    // BackLens from the LensOption in INTRINSIC-zoom scale itself.
-                                    // Mirror the resulting zoom into [zoom] so the active-chip highlight
-                                    // (nearest zoomRatio to [zoom]) follows: ZOOM → the chip's ratio,
-                                    // REAL → 1× (new sensor's native FOV). UNAVAILABLE leaves zoom as-is
-                                    // (a tap just opens the exit-dual offer; cancel must not change zoom).
+                                    // Dual: a chip is honored ONLY if its sensor runs concurrently with
+                                    // the front (REAL → switchBack to its native FOV). Every other chip
+                                    // is UNAVAILABLE and offers to drop the PiP — no silent digital zoom.
+                                    // REAL resets [zoom] to 1× (the new sensor's native FOV); UNAVAILABLE
+                                    // leaves zoom untouched (the tap only opens the exit-dual offer, which
+                                    // can be cancelled, so it must not change zoom).
                                     when (cx.classifyDualChip(lens)) {
-                                        com.example.plohoystream.camera.DualClass.ZOOM ->
-                                            zoom = lens.zoomRatio.coerceIn(zoomRange.start, zoomRange.endInclusive)
                                         com.example.plohoystream.camera.DualClass.REAL -> zoom = 1f
-                                        com.example.plohoystream.camera.DualClass.UNAVAILABLE -> {}
+                                        else -> {}
                                     }
                                     cx.dualSelectChip(lens)
                                 } else {
@@ -495,13 +497,13 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             dualSupported = dualSupported,
                             dualOn = dualOn,
                             // Dual: classify each chip per device caps so the rail dims UNAVAILABLE
-                            // chips; single mode passes null to keep current behavior. activeZoom
-                            // drives the nearest-ratio active highlight in dual.
+                            // chips (only a REAL concurrent sensor is usable); single mode passes null
+                            // to keep current behavior. dualActiveId highlights the bound back sensor.
                             dualClassOf = if (dualOn) {
                                 { lens -> (controller as? CameraXController)?.classifyDualChip(lens)
                                     ?: com.example.plohoystream.camera.DualClass.REAL }
                             } else null,
-                            activeZoom = zoom,
+                            dualActiveId = if (dualOn) dualBackLensId else null,
                             // Only flip the flag; the binding LaunchedEffect (keyed on dualOn) does the
                             // actual (re)bind, so there's a single binder and no race with start().
                             onToggleDual = {

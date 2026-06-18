@@ -34,12 +34,12 @@ import kotlin.math.abs
  * [selectedPhysicalId] null means the logical default (the ~1× main sensor), so that one is shown
  * selected until the user explicitly picks another.
  *
- * DUAL MODE: pass [dualClassOf] (non-null) to render chips by their [DualClass] while PiP is on.
- * REAL/ZOOM chips render as normal selectable chips; UNAVAILABLE chips render dimmed with a small
- * lock marker but stay clickable (the tap routes to the exit-dual offer). Active highlight in dual
- * follows the chip whose [LensOption.zoomRatio] is nearest [activeZoom] (so 1× lights at zoom 1.0,
- * 1.8× lights once zoomed/selected to ~1.8). When [dualClassOf] is null, behavior is exactly the
- * single-mode behavior ([selectedPhysicalId] drives the active chip).
+ * DUAL MODE: pass [dualClassOf] (non-null) to render chips by their [DualClass] while PiP is on. A
+ * chip is REAL only if its sensor runs concurrently with the front; REAL chips render as normal
+ * selectable chips, while UNAVAILABLE chips render dimmed with a small lock marker but stay clickable
+ * (the tap routes to the exit-dual offer). Active highlight in dual follows the chip whose
+ * [LensOption.physicalId] equals [dualActiveId] (the one bound REAL back sensor). When [dualClassOf]
+ * is null, behavior is exactly the single-mode behavior ([selectedPhysicalId] drives the active chip).
  */
 @Composable
 fun LensButtons(
@@ -48,14 +48,10 @@ fun LensButtons(
     onSelect: (LensOption) -> Unit,
     modifier: Modifier = Modifier,
     dualClassOf: ((LensOption) -> DualClass)? = null,
-    activeZoom: Float? = null,
+    dualActiveId: String? = null,
 ) {
     if (lenses.size < 2) return
     val mainId = lenses.minByOrNull { abs(it.zoomRatio - 1f) }?.physicalId
-    // In dual, the active chip is the one whose intrinsic ratio is nearest the live zoom.
-    val dualActiveId = if (dualClassOf != null && activeZoom != null) {
-        lenses.minByOrNull { abs(it.zoomRatio - activeZoom) }?.physicalId
-    } else null
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         lenses.forEach { lens ->
             val dualClass = dualClassOf?.invoke(lens)

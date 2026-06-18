@@ -110,6 +110,10 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     // The back lens currently bound as the dual back source (for classifying chip taps). Defaults to
     // the 1x main; updated on a REAL switchBack.
     private var dualBackLens: BackLens? = null
+    private val _dualBackLensId = MutableStateFlow<String?>(null)
+    /** The Camera2 id of the back sensor currently bound as the dual back source (null = not in dual).
+     *  The UI uses this to highlight the one active/usable chip while PiP is on. */
+    val dualBackLensId: StateFlow<String?> = _dualBackLensId.asStateFlow()
     // Default front id, cached once (in enterDual / lazily) so classifyDualChip stays cheap and
     // synchronous (no Camera2 enumeration on every chip render).
     private var cachedFrontId: String? = null
@@ -204,6 +208,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             lastTargets = emptyList()
             dualScene = null
             dualBackLens = null
+            _dualBackLensId.value = null
             camera = null
             // Tear down the standalone dual session (no-op if not in dual).
             dualSession?.stop()
@@ -289,6 +294,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             dualBackLens = mainLens
                 ?.let { BackLens(it.physicalId, it.zoomRatio, zr.start, zr.endInclusive) }
                 ?: BackLens(backId, 1f, zr.start, zr.endInclusive)
+            _dualBackLensId.value = dualBackLens?.id
             val session = dualSession ?: DualCameraSession(appContext, processor, caps).also { dualSession = it }
             // (Defect B) On ANY failure path, tear down the standalone/dual state BEFORE the caller
             // reverts to single. The caller's onFailed flips scene=SINGLE which rebinds CameraX; if
@@ -328,6 +334,7 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             dualSession?.stop()
             dualScene = null
             dualBackLens = null
+            _dualBackLensId.value = null
         }
     }
 
@@ -365,48 +372,49 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     }
 
     /**
-     * Classify [lens] for dual WITHOUT taking action — the UI calls this per chip to decide rendering
-     * (REAL/ZOOM = normal; UNAVAILABLE = dimmed). Cheap + synchronous: reads cached caps + a cached
-     * front id. If caps or the front id aren't available yet, returns [DualClass.REAL] (treat as a
-     * normal, selectable chip) as a safe default.
+     * Classify [lens] for dual WITHOUT taking action — the UI calls this per chip to decide rendering.
+     * A chip is usable (REAL) ONLY if its physical sensor can run concurrently with the front camera;
+     * EVERY other case (what the pure model would call ZOOM or UNAVAILABLE) is COLLAPSED to UNAVAILABLE
+     * so there's no silent digital-zoom substitute — those chips dim + lock and offer to drop the PiP.
+     * Cheap + synchronous: reads cached caps + a cached front id. If caps or the front id aren't
+     * available yet, returns [DualClass.REAL] (treat as a normal, selectable chip) as a safe default.
      */
     fun classifyDualChip(lens: LensOption): DualClass {
         val caps = _capabilities.value ?: return DualClass.REAL
         val frontId = frontIdCached() ?: return DualClass.REAL
         val openBack = dualBackLens ?: return DualClass.REAL
-        return caps.dualClass(intrinsicChip(lens), openBack, frontId)
+        val pureClass = caps.dualClass(intrinsicChip(lens), openBack, frontId)
+        return if (pureClass == DualClass.REAL) DualClass.REAL else DualClass.UNAVAILABLE
     }
 
     /**
-     * Route a back-lens chip tap while dual is on. Classifies [lens] (built in intrinsic-zoom scale)
-     * against the currently-open back lens ([dualBackLens]) and the default front:
-     *  - REAL → switch the back sensor blink-free ([DualCameraSession.switchBack]); updates the
-     *    remembered open-back lens.
-     *  - ZOOM → reach the chip's framing by digital-zooming the open sensor to its INTRINSIC ratio
-     *    (e.g. 1.8×, NOT the focal-relative caps ratio).
-     *  - UNAVAILABLE → invoke [onExitDualRequested] (UI confirms exit-to-single in Task 7).
+     * Route a back-lens chip tap while dual is on. A chip is honored ONLY if its sensor can run
+     * concurrently with the front (REAL, via [classifyDualChip]); every other chip offers to drop the
+     * PiP instead of silently digital-zooming:
+     *  - REAL, same sensor as the open back → reset that sensor's digital zoom to its native framing
+     *    ([DualCameraSession.setZoom] at the chip's intrinsic ratio), so e.g. tapping 1× undoes a pinch.
+     *  - REAL, different sensor → switch the back sensor blink-free ([DualCameraSession.switchBack]);
+     *    updates the remembered open-back lens + [dualBackLensId].
+     *  - UNAVAILABLE (everything else) → invoke [onExitDualRequested] (UI confirms exit-to-single).
      */
     fun dualSelectChip(lens: LensOption) {
         mainExecutor.execute {
-            val caps = _capabilities.value ?: return@execute
-            val frontId = frontIdCached() ?: return@execute
             val chipBl = intrinsicChip(lens)
-            val openBack = dualBackLens ?: chipBl
-            when (caps.dualClass(chipBl, openBack, frontId)) {
+            when (classifyDualChip(lens)) {
                 DualClass.REAL -> {
                     if (chipBl.id == dualBackLens?.id) {
                         // Already the bound back sensor (e.g. tapping 1× while on the main): a
                         // switchBack would be a no-op, so it would never undo a prior digital zoom.
                         // Reset the digital zoom to this sensor's native framing (its intrinsic ratio)
-                        // so tapping the current chip actually returns to it (e.g. 1.8×→tap 1×→back to 1×).
+                        // so tapping the current chip actually returns to it (e.g. pinched→tap 1×→native).
                         dualSession?.setZoom(lens.zoomRatio)
                     } else {
                         dualBackLens = chipBl
+                        _dualBackLensId.value = chipBl.id
                         dualSession?.switchBack(lens.physicalId)
                     }
                 }
-                DualClass.ZOOM -> dualSession?.setZoom(lens.zoomRatio)
-                DualClass.UNAVAILABLE -> {
+                DualClass.ZOOM, DualClass.UNAVAILABLE -> {
                     Log.i(TAG, "dualSelectChip UNAVAILABLE chip=${lens.physicalId}@${lens.zoomRatio}; requesting exit-dual")
                     onExitDualRequested(lens)
                 }

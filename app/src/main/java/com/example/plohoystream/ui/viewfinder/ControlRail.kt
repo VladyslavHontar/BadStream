@@ -58,7 +58,7 @@ fun ControlRail(
     dualOn: Boolean = false,
     onToggleDual: () -> Unit = {},
     dualClassOf: ((LensOption) -> com.example.plohoystream.camera.DualClass)? = null,
-    activeZoom: Float? = null,
+    dualActiveId: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val reconnecting = state is StreamState.Reconnecting
@@ -81,7 +81,7 @@ fun ControlRail(
                 selectedPhysicalId = selectedPhysicalId,
                 onSelect = onSelectLens,
                 dualClassOf = dualClassOf,
-                activeZoom = activeZoom,
+                dualActiveId = dualActiveId,
             )
             if (showObsScenes) {
                 ObsSceneChip(
