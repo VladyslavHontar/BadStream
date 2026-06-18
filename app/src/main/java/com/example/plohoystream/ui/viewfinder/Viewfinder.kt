@@ -468,6 +468,16 @@ fun Viewfinder(viewModel: StreamViewModel) {
                                     // Dual: route through the chip classifier (REAL switchBack / ZOOM /
                                     // UNAVAILABLE → exit-dual request). The controller builds the chip
                                     // BackLens from the LensOption in INTRINSIC-zoom scale itself.
+                                    // Mirror the resulting zoom into [zoom] so the active-chip highlight
+                                    // (nearest zoomRatio to [zoom]) follows: ZOOM → the chip's ratio,
+                                    // REAL → 1× (new sensor's native FOV). UNAVAILABLE leaves zoom as-is
+                                    // (a tap just opens the exit-dual offer; cancel must not change zoom).
+                                    when (cx.classifyDualChip(lens)) {
+                                        com.example.plohoystream.camera.DualClass.ZOOM ->
+                                            zoom = lens.zoomRatio.coerceIn(zoomRange.start, zoomRange.endInclusive)
+                                        com.example.plohoystream.camera.DualClass.REAL -> zoom = 1f
+                                        com.example.plohoystream.camera.DualClass.UNAVAILABLE -> {}
+                                    }
                                     cx.dualSelectChip(lens)
                                 } else {
                                     cx?.beginCameraTransition()  // stream freeze-blur
