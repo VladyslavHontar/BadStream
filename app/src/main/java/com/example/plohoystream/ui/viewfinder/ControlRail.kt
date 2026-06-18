@@ -57,6 +57,8 @@ fun ControlRail(
     dualSupported: Boolean = false,
     dualOn: Boolean = false,
     onToggleDual: () -> Unit = {},
+    dualClassOf: ((LensOption) -> com.example.plohoystream.camera.DualClass)? = null,
+    activeZoom: Float? = null,
     modifier: Modifier = Modifier,
 ) {
     val reconnecting = state is StreamState.Reconnecting
@@ -74,7 +76,13 @@ fun ControlRail(
             // Audio meter shows during preview too (driven by MicMonitor when not streaming).
             AudioMeter(level = audioLevel)
             // Physical lens picker (ultrawide/main/tele); zoom WITHIN a lens is the slider over the preview.
-            LensButtons(lenses = lenses, selectedPhysicalId = selectedPhysicalId, onSelect = onSelectLens)
+            LensButtons(
+                lenses = lenses,
+                selectedPhysicalId = selectedPhysicalId,
+                onSelect = onSelectLens,
+                dualClassOf = dualClassOf,
+                activeZoom = activeZoom,
+            )
             if (showObsScenes) {
                 ObsSceneChip(
                     scenes = obsScenes,

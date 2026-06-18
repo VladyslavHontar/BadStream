@@ -100,6 +100,9 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val pipAspect by pipAspectFlow.collectAsStateWithLifecycle()
     var scene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.SINGLE) }
     val dualOn = scene.isDual
+    // Set when an UNAVAILABLE lens chip is tapped in dual: the controller's onExitDualRequested hands
+    // the LensOption here, which drives the "drop the PiP and switch?" confirm dialog below.
+    var exitDualChip by remember { mutableStateOf<com.example.plohoystream.camera.LensOption?>(null) }
     // Which facing is the PRIMARY (big) view in dual. Tracked SEPARATELY from [facing] so a dual swap
     // can flip it WITHOUT changing [facing] (which would recompute [config] and re-run the binding
     // LaunchedEffect → a full dual reopen). The swap is instant (relabel only) via cx.dualSwap.
@@ -163,6 +166,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                 "concurrent-camera probe: frontBackSupported=$supported combos=$combos",
             )
         }.onFailure { android.util.Log.w("Viewfinder", "concurrent-camera probe failed", it) }
+    }
+
+    // Tap-to-exit-dual: an UNAVAILABLE chip tap routes through dualSelectChip → onExitDualRequested,
+    // which surfaces the LensOption for the confirm dialog. Registered once on the controller.
+    LaunchedEffect(controller) {
+        (controller as? CameraXController)?.onExitDualRequested = { lens -> exitDualChip = lens }
     }
 
     val config = remember(cameras, facing, ui.settings.quality.fps) {
@@ -457,15 +466,9 @@ fun Viewfinder(viewModel: StreamViewModel) {
                                 val cx = controller as? CameraXController
                                 if (dualOn && cx != null) {
                                     // Dual: route through the chip classifier (REAL switchBack / ZOOM /
-                                    // UNAVAILABLE → exit-dual request). Map the LensOption to a BackLens,
-                                    // preferring the capability-derived entry (real zoom bounds) by id.
-                                    val chip = cx.capabilities.value
-                                        ?.backLenses?.firstOrNull { it.id == lens.physicalId }
-                                        ?: com.example.plohoystream.camera.BackLens(
-                                            id = lens.physicalId, ratio = lens.zoomRatio,
-                                            minZoom = 1f, maxZoom = 1f,
-                                        )
-                                    cx.dualSelectChip(chip)
+                                    // UNAVAILABLE → exit-dual request). The controller builds the chip
+                                    // BackLens from the LensOption in INTRINSIC-zoom scale itself.
+                                    cx.dualSelectChip(lens)
                                 } else {
                                     cx?.beginCameraTransition()  // stream freeze-blur
                                     zoom = 1f
@@ -481,6 +484,14 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             onSwitchScene = viewModel::obsSwitchScene,
                             dualSupported = dualSupported,
                             dualOn = dualOn,
+                            // Dual: classify each chip per device caps so the rail dims UNAVAILABLE
+                            // chips; single mode passes null to keep current behavior. activeZoom
+                            // drives the nearest-ratio active highlight in dual.
+                            dualClassOf = if (dualOn) {
+                                { lens -> (controller as? CameraXController)?.classifyDualChip(lens)
+                                    ?: com.example.plohoystream.camera.DualClass.REAL }
+                            } else null,
+                            activeZoom = zoom,
                             // Only flip the flag; the binding LaunchedEffect (keyed on dualOn) does the
                             // actual (re)bind, so there's a single binder and no race with start().
                             onToggleDual = {
@@ -503,6 +514,39 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     }
                 }
             }
+        }
+
+        // Tap-to-exit-dual confirm: an UNAVAILABLE lens chip can't run alongside the PiP, so offer to
+        // drop the PiP and switch the single camera to it. Confirm flips the scene to SINGLE (same
+        // path the dual toggle uses, so the single binder rebinds) and selects the chip's lens.
+        exitDualChip?.let { lens ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { exitDualChip = null },
+                title = { androidx.compose.material3.Text("Switch to ${lens.label}?") },
+                text = {
+                    androidx.compose.material3.Text(
+                        "${lens.label} can't run with the PiP — drop the PiP and switch the single camera to it?"
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        val cx = controller as? CameraXController
+                        cx?.exitDual()
+                        cx?.selectLens(lens.physicalId)
+                        // Flip the scene to SINGLE (the dual toggle's path) so dualOn goes false and the
+                        // single binder rebinds.
+                        if (scene.isDual) lastDualScene = scene
+                        scene = com.example.plohoystream.camera.scene.Scene.SINGLE
+                        zoom = 1f
+                        exitDualChip = null
+                    }) { androidx.compose.material3.Text("Switch") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { exitDualChip = null }) {
+                        androidx.compose.material3.Text("Cancel")
+                    }
+                },
+            )
         }
     }
 }
