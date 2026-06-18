@@ -584,12 +584,13 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     fun stopStandalone() {
         if (isReleaseRequested.get()) return
         executeSafely({
-            // Unregister ONLY the standalone preview outputs. The encoder is mode-agnostic (owned by
-            // encoderSurface/setEncoderSurface); leaving it registered keeps the stream alive across
-            // the dual->single transition and avoids the "surface is not registered" render failure.
-            for (surface in standaloneOutputs) {
-                renderer.unregisterOutputSurface(surface)
-            }
+            // Stop compositing to the standalone outputs, but DO NOT unregister the preview Surface
+            // from the renderer: that would destroy its kept-alive EGL window surface, and single
+            // mode's onFrameAvailable would then have to recreate one on the same on-screen
+            // BufferQueue — racing it and throwing EGL_BAD_ALLOC (the mirror of the dual-entry bug).
+            // The renderer's preview EGL surface is the SOLE producer in both modes, so we keep it
+            // alive across single<->dual and let whichever path is active reuse it. (The encoder is
+            // mode-agnostic, owned by encoderSurface/setEncoderSurface, and likewise stays registered.)
             standaloneOutputs.clear()
             standalonePreview = null
             primaryTexture?.let { st ->
