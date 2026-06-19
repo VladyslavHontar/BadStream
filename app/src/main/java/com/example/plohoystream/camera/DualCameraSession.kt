@@ -290,30 +290,37 @@ class DualCameraSession(
     ) {
         val callback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(session: CameraCaptureSession) {
-                if (isBack) backSession = session else frontSession = session
-                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-                    addTarget(target)
-                    set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-                }
-                if (isBack) {
-                    // Keep the back builder so setZoom can re-submit without a reopen, and restore the
-                    // current zoom (1x on start, the prior ratio after a switchBack).
-                    backRequestBuilder = builder
-                    applyZoomLocked(builder, device.id, zoomRatio)
-                }
-                val ok = runCatching { session.setRepeatingRequest(builder.build(), null, handler) }
-                    .onFailure { Log.e(TAG, "device id=${device.id} error=repeating-request", it) }
-                    .isSuccess
-                if (!ok) {
-                    onOpenPhaseError()
-                    return
-                }
-                // Both devices opened AND both sessions configured + streaming → fully LIVE. After this
-                // an error is FATAL (no retry) to avoid reopen loops. A switchBack reopens only the
-                // back side while LIVE; that path is its own fatal-on-error open, not this retry path.
-                if (phase == Phase.OPENING && backSession != null && frontSession != null) {
-                    phase = Phase.LIVE
-                    pendingRetry = null
+                // The CameraDevice/session can be closed out from under us between openCamera and this
+                // callback — the user toggled dual off, a retry/teardown closed it, or the MTK HAL
+                // aborted (camerahalserver SIGABRT). createCaptureRequest/setRepeatingRequest then throw
+                // IllegalStateException ("CameraDevice was already closed"). This runs on the camera
+                // HandlerThread, so an uncaught throw crashes the process. Guard the whole body: on any
+                // failure, close the orphaned session and, only if we're still opening, route to the
+                // retry/fail path — never crash.
+                try {
+                    if (isBack) backSession = session else frontSession = session
+                    val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                        addTarget(target)
+                        set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                    }
+                    if (isBack) {
+                        // Keep the back builder so setZoom can re-submit without a reopen, and restore the
+                        // current zoom (1x on start, the prior ratio after a switchBack).
+                        backRequestBuilder = builder
+                        applyZoomLocked(builder, device.id, zoomRatio)
+                    }
+                    session.setRepeatingRequest(builder.build(), null, handler)
+                    // Both devices opened AND both sessions configured + streaming → fully LIVE. After
+                    // this an error is FATAL (no retry) to avoid reopen loops. A switchBack reopens only
+                    // the back side while LIVE; that path is its own fatal-on-error open, not this retry.
+                    if (phase == Phase.OPENING && backSession != null && frontSession != null) {
+                        phase = Phase.LIVE
+                        pendingRetry = null
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "device id=${device.id} session configured after close/teardown; ignoring", e)
+                    runCatching { session.close() }
+                    if (phase == Phase.OPENING) onOpenPhaseError()
                 }
             }
 
