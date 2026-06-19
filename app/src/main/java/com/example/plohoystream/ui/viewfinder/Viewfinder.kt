@@ -319,7 +319,10 @@ fun Viewfinder(viewModel: StreamViewModel) {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(SurfaceBlack)) {
         val totalWidth = maxWidth
-        val railWidth = 220.dp
+        // Device-agnostic rail width: scale with the screen but clamp so it's wide enough for a
+        // row of 4 lens chips on normal phones, yet never eats a small screen's preview. The rail
+        // content scrolls and the chips wrap, so any leftover overflow is still reachable.
+        val railWidth = (totalWidth * 0.28f).coerceIn(200.dp, 260.dp)
         val panelWidth = totalWidth * 0.58f
         // Signature spring: the right region's width animates rail ⇄ panel; the preview keeps
         // weight(1f) and naturally fills whatever space is left (never zero — no crash).

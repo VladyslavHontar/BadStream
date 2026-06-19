@@ -4,7 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -52,7 +52,13 @@ fun LensButtons(
 ) {
     if (lenses.size < 2) return
     val mainId = lenses.minByOrNull { abs(it.zoomRatio - 1f) }?.physicalId
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // FlowRow (not a fixed Row): on devices with 4+ back sensors the chips wrap onto a second
+    // line instead of clipping off the rail's edge, so every lens stays reachable at any width.
+    FlowRow(
+        modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         lenses.forEach { lens ->
             val dualClass = dualClassOf?.invoke(lens)
             val selected = if (dualClassOf != null) {
