@@ -65,8 +65,9 @@ object LivePipeline {
                     hevcEncoder = hevcCaps.encoder,
                     hevcMain10 = hevcCaps.main10,
                     cameraHdr = anyCameraHdr,
+                    onLive = { StreamForegroundService.start(appCtx) },     // once, from the foreground go-live
+                    onStopped = { StreamForegroundService.stop(appCtx) },   // once, on full stop
                     startMedia = { streamer, fmt, quality, record ->
-                        StreamForegroundService.start(appCtx)
                         micMonitor.stop()   // release the mic so the encoder's AudioRecord can open it
                         // Capture both clocks at the same instant as the shared epoch (M2-B A/V sync).
                         val nanoT0 = System.nanoTime()
@@ -107,12 +108,11 @@ object LivePipeline {
                     stopMedia = {
                         video?.stop(); audio?.stop(); video = null; audio = null
                         recorder?.stop(); recorder = null
-                        StreamForegroundService.stop(appCtx)
                     },
                 )
                 eng
             }
-            obs = ObsWebSocketController(engine.state, store.data)
+            obs = ObsWebSocketController(engine.state, engine.health, store.data)
             // Preview-time mic level → same channel the streaming encoder publishes to, so the
             // audio meter is alive before go-live. Driven (start/stop) by the Viewfinder lifecycle.
             micMonitor = MicMonitor(onLevel = { lvl -> engine.publishAudioLevel(lvl) })

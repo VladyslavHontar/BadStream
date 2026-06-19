@@ -91,12 +91,49 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     /** Manual-exposure state (shutter for motion blur + ISO) for the viewfinder's exposure panel. */
     val exposure: StateFlow<ExposureState> = _exposure.asStateFlow()
 
+    private val _secondaryPipAspect = MutableStateFlow(1f)
+    /** The secondary (PiP) camera's displayed aspect (w/h, after upright rotation). The viewfinder
+     *  sizes the PiP box to this so the whole secondary frame shows without cropping. */
+    val secondaryPipAspect: StateFlow<Float> = _secondaryPipAspect.asStateFlow()
+
     private var camera: Camera? = null
+
+    // Standalone two-Camera2-device dual path. Caps are read once on a background thread in init;
+    // the session is built lazily on first use. [dualScene] remembers the live dual layout so a
+    // setScene during dual re-applies the user's CURRENT PiP position/size on a re-enter.
+    private val _capabilities = MutableStateFlow<ConcurrentCameraCapabilities?>(null)
+    /** What dual-camera framing this device can do (certified concurrent combos). Read once async at
+     *  init; null until the background read completes. The UI uses it to classify lens chips. */
+    val capabilities: StateFlow<ConcurrentCameraCapabilities?> = _capabilities.asStateFlow()
+    private var dualSession: DualCameraSession? = null
+    private var dualScene: com.example.plohoystream.camera.scene.Scene? = null
+    // The back lens currently bound as the dual back source (for classifying chip taps). Defaults to
+    // the 1x main; updated on a REAL switchBack.
+    private var dualBackLens: BackLens? = null
+    private val _dualBackLensId = MutableStateFlow<String?>(null)
+    /** The Camera2 id of the back sensor currently bound as the dual back source (null = not in dual).
+     *  The UI uses this to highlight the one active/usable chip while PiP is on. */
+    val dualBackLensId: StateFlow<String?> = _dualBackLensId.asStateFlow()
+    // Default front id, cached once (in enterDual / lazily) so classifyDualChip stays cheap and
+    // synchronous (no Camera2 enumeration on every chip render).
+    private var cachedFrontId: String? = null
+
+    /** Invoked when a dual lens chip is UNAVAILABLE on this hardware (wider than the open sensor and
+     *  not concurrent with the front). The UI's confirm-exit-dual dialog (Task 7) handles it. */
+    var onExitDualRequested: (LensOption) -> Unit = {}
 
     init {
         registry.currentState = Lifecycle.State.CREATED
         // Auto-ISO: the GL meter (GL thread) hands us scene luma; run the control law on main.
         processor.onLuma = { luma -> mainExecutor.execute { onMeteredLuma(luma) } }
+        // Secondary PiP aspect (GL thread) → publish on main for the viewfinder to size the PiP box.
+        processor.onSecondaryAspect = { aspect -> mainExecutor.execute { _secondaryPipAspect.value = aspect } }
+        // Read concurrent-camera caps off the main thread so enterDual can build a DualCameraSession.
+        Thread {
+            runCatching { CameraCapabilityReader.read(appContext) }
+                .onSuccess { _capabilities.value = it }
+                .onFailure { Log.w(TAG, "concurrent caps read failed", it) }
+        }.start()
         val future = ProcessCameraProvider.getInstance(appContext)
         future.addListener({
             try {
@@ -123,7 +160,8 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
     /** Start a freeze-blur transition in the GL pipeline (covers preview AND the encoded stream). */
     fun beginCameraTransition() = processor.beginTransition()
 
-    /** Switch to a back/front camera sensor (ultrawide/main/tele) by its Camera2 id; rebinds. */
+    /** Switch to a back/front camera sensor (ultrawide/main/tele) by its Camera2 id; rebinds the
+     *  single camera. (Dual-mode lens switches go through [dualSelectChip].) */
     fun selectLens(physicalId: String?) {
         mainExecutor.execute {
             if (_selectedPhysicalId.value == physicalId) return@execute
@@ -154,6 +192,10 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             // the preview.
             val encoder = targets.firstOrNull { it !== previewSurface }
             processor.setEncoderSurface(encoder)
+            processor.setScene(com.example.plohoystream.camera.scene.Scene.SINGLE)  // clear dual state
+            // (Re)entering single mode (incl. after a dual failure/exit): ensure single rendering is
+            // enabled so a suspended-by-enterDual render path can't stay inert.
+            processor.setEnteringDual(false)
             Log.i(TAG, "start facing=${config.facing} targets=${targets.size} encoder=${encoder != null}")
             bindIfReady()
         }
@@ -164,7 +206,12 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             pendingStart = false
             lastConfig = null
             lastTargets = emptyList()
+            dualScene = null
+            dualBackLens = null
+            _dualBackLensId.value = null
             camera = null
+            // Tear down the standalone dual session (no-op if not in dual).
+            dualSession?.stop()
             provider?.unbindAll()
             processor.setEncoderSurface(null)
             registry.currentState = Lifecycle.State.CREATED
@@ -176,6 +223,280 @@ class CameraXController(context: Context) : CameraController, LifecycleOwner {
             currentZoom = CameraControls.clampZoom(ratio, minZoom, maxZoom)
             camera?.cameraControl?.setZoomRatio(currentZoom)
         }
+    }
+
+    /**
+     * Enter dual (PiP) mode: unbind any CameraX session, then open the BACK + FRONT cameras as two
+     * independent Camera2 devices via [DualCameraSession], routing the device whose facing matches
+     * [primaryFacing] to the big view and the other to the PiP. [preview] is the on-screen surface,
+     * [encoder] the (non-preview) stream target; both are composited by the processor's standalone
+     * mode. [onFailed] fires (caller reverts to single) if caps aren't ready, the ids can't be
+     * resolved, or a device open/configure fails.
+     */
+    fun enterDual(
+        primaryFacing: Facing,
+        scene: com.example.plohoystream.camera.scene.Scene,
+        preview: Surface?,
+        encoder: Surface?,
+        onFailed: () -> Unit,
+    ) {
+        mainExecutor.execute {
+            // Cover the unavoidable dual-entry latency (CameraX close + cameras-free gate + opening
+            // two Camera2 devices) with the existing freeze-blur, exactly like a lens/camera switch:
+            // the encoded stream shows the blur and the preview holds its last frame during entry.
+            // No-op if no frame has been seen yet, so it's safe even on a cold first entry.
+            processor.beginTransition()
+            // Suspend the SINGLE-mode render path for the WHOLE transition (CameraX close + cameras-
+            // free gate + opening two Camera2 devices). The freeze-blur alone only skips single
+            // rendering for a ~250ms min window, which is shorter than dual entry, so single rendering
+            // would otherwise resume and race CameraX's preview-SurfaceOutput teardown → EGL_BAD_ALLOC.
+            // Cleared by startStandaloneDual (dual up) or onInputSurface/start (single rebind on fail).
+            processor.setEnteringDual(true)
+            // Reset the PiP aspect to a sentinel so the secondary's real aspect (emitted by the
+            // processor once its frames size is known) is ALWAYS a fresh value -> the viewfinder's
+            // aspect LaunchedEffect re-fires and re-shapes the PiP box on every dual entry. Without
+            // this, re-entering dual when the flow still held the prior aspect would not re-emit, and
+            // the box would keep the default (16:9 region) aspect instead of the source's (e.g. 4:3).
+            _secondaryPipAspect.value = 0f
+            val caps = _capabilities.value ?: run {
+                Log.w(TAG, "enterDual: concurrent caps not ready yet")
+                onFailed(); return@execute
+            }
+            val mgr = runCatching {
+                appContext.getSystemService(android.content.Context.CAMERA_SERVICE)
+                    as android.hardware.camera2.CameraManager
+            }.getOrNull()
+            val backId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_BACK) }
+            val frontId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_FRONT) }
+            if (backId == null || frontId == null) {
+                Log.w(TAG, "enterDual: could not resolve default back/front ids (back=$backId front=$frontId)")
+                onFailed(); return@execute
+            }
+            // Capture the currently-selected single-mode physical lens BEFORE releasing CameraX. If
+            // single was on a non-default back lens (tele id3 / ultrawide id2), CameraX's teardown of
+            // that physical-id camera graph is slow and still holds a camera slot; opening {default
+            // back, default front} then hits ERROR_MAX_CAMERAS_IN_USE. We make the cameras-free gate
+            // ALSO wait for that lens to close. (null / the default main needs no extra wait.)
+            val extra = _selectedPhysicalId.value?.let { setOf(it) } ?: emptySet()
+            // Dual always uses the default back (id0); reset single's selected-lens bookkeeping so it's
+            // consistent and we don't re-conflict on the eventual exit back to single.
+            _selectedPhysicalId.value = null
+            // Release any CameraX binding first; the processor's standalone mode owns the surfaces.
+            runCatching { provider?.unbindAll() }
+            camera = null
+            dualScene = scene
+            cachedFrontId = frontId
+            // The dual back source starts on the 1x main, in INTRINSIC-zoom scale (so it matches the
+            // chips, which carry the intrinsic zoomRatio). Prefer the enumerated main lens (zoomRatio
+            // ≈ 1.0); fall back to a synthetic main BackLens at the device's full zoom range.
+            val zr = _zoomRange.value
+            val mainLens = _lenses.value.minByOrNull { kotlin.math.abs(it.zoomRatio - 1f) }
+            dualBackLens = mainLens
+                ?.let { BackLens(it.physicalId, it.zoomRatio, zr.start, zr.endInclusive) }
+                ?: BackLens(backId, 1f, zr.start, zr.endInclusive)
+            _dualBackLensId.value = dualBackLens?.id
+            val session = dualSession ?: DualCameraSession(appContext, processor, caps).also { dualSession = it }
+            // (Defect B) On ANY failure path, tear down the standalone/dual state BEFORE the caller
+            // reverts to single. The caller's onFailed flips scene=SINGLE which rebinds CameraX; if
+            // standalone's preview EGL window surface still held the on-screen Surface's BufferQueue
+            // producer slot, CameraX's rebound preview SurfaceOutput would hit EGL_BAD_ALLOC. session
+            // .stop() calls processor.stopStandalone() (which unregisters the standalone preview) and is
+            // idempotent via its `started` guard, so the double stop on the internal fail() path is safe.
+            val safeOnFailed = {
+                mainExecutor.execute {
+                    dualSession?.stop()
+                    onFailed()
+                }
+            }
+            // unbindAll() closes the prior CameraX session ASYNCHRONOUSLY; opening the two Camera2
+            // devices before that finishes races CAMERA_IN_USE → onFailed → dual turns off. Gate the
+            // session start on both default cameras AND the just-released non-default lens (extra)
+            // being free (or a 2s timeout).
+            awaitCamerasFreeThenBind(extra) {
+                session.start(
+                    primaryFacing = primaryFacing,
+                    backId = backId,
+                    frontId = frontId,
+                    preview = preview,
+                    encoder = encoder,
+                    displayDeg = displayDegrees(),
+                    scene = scene,
+                    onFailed = safeOnFailed,
+                )
+            }
+        }
+    }
+
+    /** Leave dual mode: tear down the dual session. The single rebind happens via the single
+     *  [start] path the Viewfinder calls when dualOn flips false. */
+    fun exitDual() {
+        mainExecutor.execute {
+            dualSession?.stop()
+            dualScene = null
+            dualBackLens = null
+            _dualBackLensId.value = null
+        }
+    }
+
+    /** Instant dual swap (no device/session reopen): relabel which open camera is the big view. */
+    fun dualSwap(primaryFacing: Facing) {
+        mainExecutor.execute {
+            dualSession?.swapPrimary(primaryFacing)
+        }
+    }
+
+    /** Digital zoom on the dual back device (no reopen). */
+    fun dualSetZoom(ratio: Float) {
+        mainExecutor.execute { dualSession?.setZoom(ratio) }
+    }
+
+    /**
+     * Build the chip's back-lens model in INTRINSIC-zoom scale (the same scale the chips carry, e.g.
+     * tele's [LensOption.zoomRatio] ≈ 1.8), with the device's full zoom range as its bounds. This is
+     * what gets classified against [dualBackLens] (also intrinsic), so a ZOOM check ("can the open
+     * sensor digital-zoom to this framing?") compares like-for-like.
+     */
+    private fun intrinsicChip(lens: LensOption): BackLens {
+        val zr = _zoomRange.value
+        return BackLens(lens.physicalId, lens.zoomRatio, zr.start, zr.endInclusive)
+    }
+
+    /** Lazily resolve + cache the default front id (enterDual normally fills [cachedFrontId] first). */
+    private fun frontIdCached(): String? {
+        cachedFrontId?.let { return it }
+        val mgr = runCatching {
+            appContext.getSystemService(android.content.Context.CAMERA_SERVICE)
+                as android.hardware.camera2.CameraManager
+        }.getOrNull() ?: return null
+        return defaultCameraId(mgr, CameraMetadata.LENS_FACING_FRONT)?.also { cachedFrontId = it }
+    }
+
+    /**
+     * Classify [lens] for dual WITHOUT taking action — the UI calls this per chip to decide rendering.
+     * A chip is usable (REAL) ONLY if its physical sensor can run concurrently with the front camera;
+     * EVERY other case (what the pure model would call ZOOM or UNAVAILABLE) is COLLAPSED to UNAVAILABLE
+     * so there's no silent digital-zoom substitute — those chips dim + lock and offer to drop the PiP.
+     * Cheap + synchronous: reads cached caps + a cached front id. If caps or the front id aren't
+     * available yet, returns [DualClass.REAL] (treat as a normal, selectable chip) as a safe default.
+     */
+    fun classifyDualChip(lens: LensOption): DualClass {
+        val caps = _capabilities.value ?: return DualClass.REAL
+        val frontId = frontIdCached() ?: return DualClass.REAL
+        val openBack = dualBackLens ?: return DualClass.REAL
+        val pureClass = caps.dualClass(intrinsicChip(lens), openBack, frontId)
+        return if (pureClass == DualClass.REAL) DualClass.REAL else DualClass.UNAVAILABLE
+    }
+
+    /**
+     * Route a back-lens chip tap while dual is on. A chip is honored ONLY if its sensor can run
+     * concurrently with the front (REAL, via [classifyDualChip]); every other chip offers to drop the
+     * PiP instead of silently digital-zooming:
+     *  - REAL, same sensor as the open back → reset that sensor's digital zoom to its native framing
+     *    ([DualCameraSession.setZoom] at the chip's intrinsic ratio), so e.g. tapping 1× undoes a pinch.
+     *  - REAL, different sensor → switch the back sensor blink-free ([DualCameraSession.switchBack]);
+     *    updates the remembered open-back lens + [dualBackLensId].
+     *  - UNAVAILABLE (everything else) → invoke [onExitDualRequested] (UI confirms exit-to-single).
+     */
+    fun dualSelectChip(lens: LensOption) {
+        mainExecutor.execute {
+            val chipBl = intrinsicChip(lens)
+            when (classifyDualChip(lens)) {
+                DualClass.REAL -> {
+                    if (chipBl.id == dualBackLens?.id) {
+                        // Already the bound back sensor (e.g. tapping 1× while on the main): a
+                        // switchBack would be a no-op, so it would never undo a prior digital zoom.
+                        // Reset the digital zoom to this sensor's native framing (its intrinsic ratio)
+                        // so tapping the current chip actually returns to it (e.g. pinched→tap 1×→native).
+                        dualSession?.setZoom(lens.zoomRatio)
+                    } else {
+                        dualBackLens = chipBl
+                        _dualBackLensId.value = chipBl.id
+                        dualSession?.switchBack(lens.physicalId)
+                    }
+                }
+                DualClass.ZOOM, DualClass.UNAVAILABLE -> {
+                    Log.i(TAG, "dualSelectChip UNAVAILABLE chip=${lens.physicalId}@${lens.zoomRatio}; requesting exit-dual")
+                    onExitDualRequested(lens)
+                }
+            }
+        }
+    }
+
+    /** Forward a new preview [surface] (null = drop preview) to the dual compositor (background/resume). */
+    fun setDualPreview(surface: Surface?) {
+        mainExecutor.execute { dualSession?.setPreview(surface) }
+    }
+
+    /** Push a new composited scene to the GL pipeline (live PiP move/resize). Also remembers the
+     *  latest dual layout so a dual re-enter (resume) re-applies the user's CURRENT PiP
+     *  position/size/aspect rather than the default layout captured at [enterDual]. */
+    fun setScene(scene: com.example.plohoystream.camera.scene.Scene) {
+        if (scene.isDual) dualScene = scene
+        processor.setScene(scene)
+    }
+
+    /**
+     * Run [bind] (on the main thread) once the default front AND back cameras — PLUS any [extraIds]
+     * the caller names — are all reported available by [android.hardware.camera2.CameraManager],
+     * i.e. the prior session's camera(s) have finished their async close — or after a 2s safety
+     * timeout. Prevents the ERROR_CAMERA_LIMIT_EXCEEDED / ERROR_MAX_CAMERAS_IN_USE that wedges a
+     * concurrent re-bind issued too soon after unbindAll(). [extraIds] is how dual entry waits for a
+     * non-default single-mode lens (tele/ultrawide) graph to fully tear down before opening {0,1}.
+     */
+    private fun awaitCamerasFreeThenBind(extraIds: Set<String> = emptySet(), bind: () -> Unit) {
+        val mgr = runCatching {
+            appContext.getSystemService(android.content.Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+        }.getOrNull()
+        val backId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_BACK) }
+        val frontId = mgr?.let { defaultCameraId(it, CameraMetadata.LENS_FACING_FRONT) }
+        if (mgr == null || backId == null || frontId == null) { bind(); return }
+        // The full set of ids that must all be available before we bind: default back + front, plus
+        // any extra (the selected tele/ultrawide lens) the caller asked us to wait on.
+        val required = HashSet<String>().apply { add(backId); add(frontId); addAll(extraIds) }
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val available = HashSet<String>()
+        var done = false
+        lateinit var cb: android.hardware.camera2.CameraManager.AvailabilityCallback
+        fun finish() {
+            if (done) return
+            done = true
+            handler.removeCallbacksAndMessages(null)
+            runCatching { mgr.unregisterAvailabilityCallback(cb) }
+            bind()
+        }
+        cb = object : android.hardware.camera2.CameraManager.AvailabilityCallback() {
+            override fun onCameraAvailable(cameraId: String) {
+                available.add(cameraId)
+                if (available.containsAll(required)) finish()
+            }
+            override fun onCameraUnavailable(cameraId: String) { available.remove(cameraId) }
+        }
+        // registerAvailabilityCallback immediately reports cameras that are already free.
+        mgr.registerAvailabilityCallback(cb, handler)
+        handler.postDelayed({ finish() }, 2000L)   // safety: bind anyway if availability never settles
+    }
+
+    private fun defaultCameraId(mgr: android.hardware.camera2.CameraManager, lensFacing: Int): String? =
+        runCatching {
+            mgr.cameraIdList.firstOrNull { id ->
+                mgr.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == lensFacing
+            }
+        }.getOrNull()
+
+    @Suppress("DEPRECATION")
+    private fun displayRotation(): Int = try {
+        val wm = appContext.getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
+        wm.defaultDisplay.rotation
+    } catch (e: Exception) {
+        Surface.ROTATION_0
+    }
+
+    /** Current display rotation in degrees (0/90/180/270), for the secondary's derived transform. */
+    private fun displayDegrees(): Int = when (displayRotation()) {
+        Surface.ROTATION_90 -> 90
+        Surface.ROTATION_180 -> 180
+        Surface.ROTATION_270 -> 270
+        else -> 0
     }
 
     private fun onProviderReady() {

@@ -34,7 +34,90 @@ class EgressSurfaceProcessor : SurfaceProcessor {
     private companion object {
         const val TAG = "EgressSurfaceProcessor"
         const val METER_EVERY = 6   // sample luma every Nth frame (~5Hz at 30fps) for Auto-ISO
+        const val PIP_CORNER_RADIUS = 0.18f   // PiP rounded-corner radius, in half-height units
+        // Bounded wait for CameraX to release the preview Surface's producer slot before standalone
+        // connects. Re-checked on the GL handler every STEP; after BUDGET we attach anyway (the
+        // unregister-then-register in attachStandalonePreview is the fallback that frees any stale
+        // producer connection the renderer itself still holds).
     }
+
+    // Scene compositor state. The scene (single source of truth for preview + stream) and the
+    // secondary camera's orientation are pushed in from the controller; read on the GL thread.
+    @Volatile private var scene: com.example.plohoystream.camera.scene.Scene =
+        com.example.plohoystream.camera.scene.Scene.SINGLE
+    private var primaryTexture: SurfaceTexture? = null
+    private var secondaryTexture: SurfaceTexture? = null
+    private val secondaryRawTransform = FloatArray(16)
+    @Volatile private var secondarySrcW = 0
+    @Volatile private var secondarySrcH = 0
+    @Volatile private var secondarySensorDeg = 0
+    @Volatile private var secondaryIsFront = true
+    @Volatile private var displayDeg = 0
+
+    /** Replace the composited scene (live; safe from any thread). >1 layer engages the compositor. */
+    fun setScene(newScene: com.example.plohoystream.camera.scene.Scene) {
+        // `scene` is @Volatile and read on the GL thread at composite time, so a live PiP edit
+        // (drag/resize, which stays dual) publishes the new reference DIRECTLY — no glHandler post.
+        // Posting a runnable per drag event floods the single GL handler ahead of the camera frame
+        // callbacks (which post to the SAME handler), starving updateTexImage and dropping the PiP to
+        // ~10fps. Only a transition to single mode needs the GL thread, to drop the dual textures.
+        scene = newScene
+        if (!newScene.isDual) {
+            executeSafely({ primaryTexture = null; secondaryTexture = null })
+        }
+    }
+
+    /** Orientation inputs for the SECONDARY (PiP) source's derived transform. Set at dual bind. */
+    fun setDualConfig(sensorDeg: Int, isFront: Boolean, displayDegrees: Int) {
+        executeSafely({
+            secondarySensorDeg = sensorDeg
+            secondaryIsFront = isFront
+            displayDeg = displayDegrees
+        })
+    }
+
+    /** Invoked (on the GL thread) with the SECONDARY camera's displayed aspect (w/h, after its
+     *  upright rotation) once its frame size is known — so the UI can size the PiP box to match the
+     *  source and avoid cropping. */
+    @Volatile var onSecondaryAspect: ((Float) -> Unit)? = null
+
+    private val dualMode: Boolean get() = scene.isDual
+
+    // Standalone-dual (Camera2-fed) mode. When true, this processor is NOT driven by CameraX:
+    // `onInputSurface`/`onOutputSurface` are inert and the two input SurfaceTextures are owned here,
+    // fed by two independent Camera2 devices. The PRIMARY layer is then oriented with DisplayTransform
+    // (like the SECONDARY), since neither source goes through CameraX's display-correcting transform.
+    @Volatile private var standalone = false
+    // Single->dual transition gate. While true, the SINGLE-mode (CameraX) render path is INERT: it
+    // renders nothing so it can't (re)create an EGL window surface on a preview SurfaceOutput that
+    // CameraX is mid-teardown of during dual entry (→ EGL_BAD_ALLOC, PiP flash). Set true at the
+    // start of enterDual, cleared when standalone takes over (startStandaloneDual) or single
+    // (re)binds (onInputSurface/start) after a successful or failed dual entry.
+    @Volatile private var enteringDual = false
+
+    /** Suspend/resume the SINGLE-mode render path for the duration of a single->dual transition.
+     *  @Volatile; set directly (read on the GL thread). */
+    fun setEnteringDual(v: Boolean) { enteringDual = v }
+    // Instant camera swap (standalone only): which scene source maps to which input slot. When false
+    // PRIMARY→slotA(texture)/SECONDARY→slotB(texture2); when true the two are swapped. Both textures
+    // stream regardless, so flipping this is instant (no device/session reopen). GL-thread mutation.
+    @Volatile private var standaloneSwapped = false
+    private val primaryRawTransform = FloatArray(16)
+    @Volatile private var primarySrcW = 0
+    @Volatile private var primarySrcH = 0
+    @Volatile private var primarySensorDeg = 0
+    @Volatile private var primaryIsFront = false
+    // Direct render targets in standalone mode (preview + encoder). GL-thread-only mutation/iteration.
+    private val standaloneOutputs = LinkedHashSet<Surface>()
+    private var standalonePreview: Surface? = null
+    // Logged once per dual entry on the first composite, to confirm on-device that the preview is
+    // attached (outputs>=1) and standalone frames are flowing.
+    @Volatile private var firstStandaloneComposite = false
+    // Surface wrappers around the standalone input SurfaceTextures. GL-thread-only. Must be released
+    // on teardown alongside their SurfaceTextures (the single-mode path in onInputSurface releases
+    // both in its provideSurface callback; standalone has no such callback, so we track them here).
+    private var standalonePrimarySurface: Surface? = null
+    private var standaloneSecondarySurface: Surface? = null
 
     /** When true, [onLuma] is invoked ~5Hz with the average frame luma (0..1) for Auto-ISO. */
     @Volatile var meteringEnabled = false
@@ -115,18 +198,32 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             request.willNotProvideSurface()
             return
         }
+        if (standalone) {
+            // Dual is Camera2-driven; the CameraX path is inactive in standalone mode.
+            request.willNotProvideSurface()
+            return
+        }
         executeSafely({
+            // A new primary SurfaceTexture for the single (CameraX) path: dual entry either never
+            // happened or FAILED and we're falling back to single — resume single rendering.
+            enteringDual = false
             inputSurfaceCount++
+            Log.i(TAG, "onInputSurface #$inputSurfaceCount res=${request.resolution.width}x${request.resolution.height} dual=$dualMode")
+            // Only the PRIMARY camera flows through the effect/onInputSurface. The SECONDARY (PiP)
+            // camera is fed directly into the renderer's 2nd texture via [provideSecondarySurface].
             val surfaceTexture = SurfaceTexture(renderer.textureName)
             surfaceTexture.setDefaultBufferSize(
                 request.resolution.width,
                 request.resolution.height,
             )
+            if (dualMode) primaryTexture = surfaceTexture
             val surface = Surface(surfaceTexture)
             request.provideSurface(surface, glExecutor) {
                 surfaceTexture.setOnFrameAvailableListener(null)
                 surfaceTexture.release()
                 surface.release()
+                if (surfaceTexture === primaryTexture) primaryTexture = null
+                if (surfaceTexture === secondaryTexture) secondaryTexture = null
                 inputSurfaceCount--
                 checkReadyToRelease()
             }
@@ -134,8 +231,54 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         }, request::willNotProvideSurface)
     }
 
+    /**
+     * SurfaceProvider sink for the SECONDARY (PiP) camera in dual mode. The second camera's CameraX
+     * [Preview] has NO effect and routes here directly: we hand it a SurfaceTexture bound to the
+     * renderer's 2nd OES texture and refresh that texture (+ its transform) on every frame, on the GL
+     * thread. The primary frame drives the actual composite. Safe to call from any thread.
+     */
+    fun provideSecondarySurface(request: SurfaceRequest) {
+        if (isReleaseRequested.get()) { request.willNotProvideSurface(); return }
+        executeSafely({
+            val st = SurfaceTexture(renderer.textureName2)
+            st.setDefaultBufferSize(request.resolution.width, request.resolution.height)
+            secondarySrcW = request.resolution.width
+            secondarySrcH = request.resolution.height
+            secondaryTexture = st
+            // Tell the UI the secondary's displayed aspect (post-rotation) so it can size the PiP
+            // box to the source and avoid cropping.
+            // The secondary arrives upright at its NATIVE frame aspect: CameraX bakes the
+            // sensor→display rotation into the SurfaceTexture transform, and our orientation matrix
+            // is calibrated so the net rotation is aspect-preserving (the face is upright while the
+            // frame stays e.g. 4:3). So the PiP box matches the source's native w/h — no swap.
+            val aspect = if (secondarySrcH > 0) secondarySrcW.toFloat() / secondarySrcH else 1f
+            onSecondaryAspect?.invoke(aspect)
+            val sfc = Surface(st)
+            request.provideSurface(sfc, glExecutor) {
+                st.setOnFrameAvailableListener(null)
+                st.release()
+                sfc.release()
+                if (st === secondaryTexture) secondaryTexture = null
+            }
+            st.setOnFrameAvailableListener({ s ->
+                if (isReleaseRequested.get()) return@setOnFrameAvailableListener
+                try {
+                    s.updateTexImage()
+                    s.getTransformMatrix(secondaryRawTransform)
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "secondary updateTexImage failed (producer torn down?)", e)
+                }
+            }, glHandler)
+        }, request::willNotProvideSurface)
+    }
+
     override fun onOutputSurface(output: SurfaceOutput) {
         if (isReleaseRequested.get()) {
+            output.close()
+            return
+        }
+        if (standalone) {
+            // Dual is Camera2-driven; the CameraX path is inactive in standalone mode.
             output.close()
             return
         }
@@ -192,6 +335,11 @@ class EgressSurfaceProcessor : SurfaceProcessor {
 
     private fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
         if (isReleaseRequested.get()) return
+        // A single->dual transition is in progress: render nothing on the single path. CameraX is
+        // tearing down this preview SurfaceOutput's BufferQueue; calling render() here would try to
+        // (re)create an EGL window surface on that mid-teardown queue → EGL_BAD_ALLOC. The standalone
+        // path takes over (clearing this) once dual is up; a failed entry rebinds single and clears it.
+        if (enteringDual) return
         // updateTexImage()/getTransformMatrix can fail natively when the camera producer is
         // disconnected mid-frame during a teardown — app backgrounded, screen rotation, or a camera
         // rebind — while this frame callback was already queued on the GL thread. That is a
@@ -214,6 +362,31 @@ class EgressSurfaceProcessor : SurfaceProcessor {
             transitionActive = false
             Log.d(TAG, "transition ended; rendering live (outputs=${outputSurfaces.size}, encoder=${encoderSurface != null})")
         }
+
+        if (dualMode && primaryTexture != null && secondaryTexture != null) {
+            for ((output, surface) in outputSurfaces) {
+                output.updateTransformMatrix(surfaceOutputTransform, textureTransform)
+                System.arraycopy(surfaceOutputTransform, 0, encoderTransform, 0, 16)
+                hasEncoderTransform = true
+                try {
+                    renderer.renderScene(timestampNs, buildLayers(surfaceOutputTransform, surface), surface)
+                } catch (e: RuntimeException) { Log.e(TAG, "composite preview render failed", e) }
+            }
+            encoderSurface?.let { surface ->
+                val primaryTransform = if (hasEncoderTransform) encoderTransform else textureTransform
+                try {
+                    renderer.renderScene(timestampNs, buildLayers(primaryTransform, surface), surface)
+                } catch (e: RuntimeException) { Log.e(TAG, "composite encoder render failed", e) }
+            }
+            return
+        }
+
+        // The scene wants a composite but a source isn't ready yet — during a dual rebind (e.g. a
+        // back-lens switch) the textures are briefly torn down and reopened, and the new primary's
+        // first frame can arrive before the secondary's. Hold the last composited frame rather than
+        // flashing the primary full-frame (the PiP blinking out then back). Falls back to single
+        // rendering only when the scene is genuinely single (dualMode false).
+        if (dualMode) return
 
         // Render to each CameraX preview output (transform adjusted by the SurfaceOutput). Cache
         // that orientation-corrected transform so the encoder matches the preview orientation.
@@ -250,6 +423,332 @@ class EgressSurfaceProcessor : SurfaceProcessor {
         }
     }
 
+    /**
+     * Map the current [scene] to GL layers for [surface]. PRIMARY uses CameraX's display-correct
+     * [primaryTransform] (full-frame, no extra crop). SECONDARY uses the derived orientation+mirror
+     * transform composed with its raw SurfaceTexture transform, plus a cover-crop for its PiP rect.
+     */
+    private fun buildLayers(
+        primaryTransform: FloatArray,
+        surface: Surface,
+    ): List<GlRenderer.RenderLayer> {
+        val dt = com.example.plohoystream.camera.scene.DisplayTransform
+        val outAspect = renderer.outputAspect(surface)
+        return scene.ordered().mapNotNull { layer ->
+            when (layer.source) {
+                com.example.plohoystream.camera.scene.SourceId.PRIMARY ->
+                    GlRenderer.RenderLayer(
+                        renderer.textureName, primaryTransform,
+                        layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
+                    )
+                com.example.plohoystream.camera.scene.SourceId.SECONDARY -> {
+                    // Content is displayed at the source's native aspect (see provideSecondarySurface).
+                    val contentAspect = if (secondarySrcH > 0) secondarySrcW.toFloat() / secondarySrcH else 1f
+                    val rectAspect = (layer.rect.width * outAspect) / layer.rect.height
+                    val (cropX, cropY) = dt.coverCrop(contentAspect, rectAspect)
+                    val orient = dt.matrix(secondarySensorDeg, displayDeg, secondaryIsFront, cropX, cropY)
+                    val tex = FloatArray(16)
+                    android.opengl.Matrix.multiplyMM(tex, 0, orient, 0, secondaryRawTransform, 0)
+                    GlRenderer.RenderLayer(
+                        renderer.textureName2, tex,
+                        layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
+                        cornerRadius = PIP_CORNER_RADIUS,
+                        mirror = secondaryIsFront,   // selfie-mirror the front PiP; back stays un-mirrored
+                    )
+                }
+            }
+        }
+    }
+
+    // region Standalone-dual (Camera2-fed) mode
+
+    /** The two input [Surface]s returned by [startStandaloneDual]: feed each from a Camera2 device. */
+    data class DualInputs(val primary: Surface, val secondary: Surface)
+
+    /**
+     * Switch this processor into standalone-dual mode: it owns two input SurfaceTextures (one per
+     * Camera2 device) and renders the composite directly to [preview] and [encoder] (each may be
+     * null). Both sources are oriented with [com.example.plohoystream.camera.scene.DisplayTransform]
+     * (the PRIMARY too, since neither flows through CameraX). Runs setup on the GL thread and returns
+     * the two input Surfaces to hand to the Camera2 capture sessions. The CameraX entry points
+     * ([onInputSurface]/[onOutputSurface]) become inert once standalone is engaged.
+     */
+    fun startStandaloneDual(
+        preview: Surface?,
+        encoder: Surface?,
+        primarySensorDeg: Int,
+        primaryIsFront: Boolean,
+        secondarySensorDeg: Int,
+        secondaryIsFront: Boolean,
+        displayDeg: Int,
+        primarySize: android.util.Size,
+        secondarySize: android.util.Size,
+        scene: com.example.plohoystream.camera.scene.Scene,
+    ): DualInputs {
+        var result: DualInputs? = null
+        glExecuteSafelyBlocking {
+            val primaryST = SurfaceTexture(renderer.textureName)
+            primaryST.setDefaultBufferSize(primarySize.width, primarySize.height)
+            val secondaryST = SurfaceTexture(renderer.textureName2)
+            secondaryST.setDefaultBufferSize(secondarySize.width, secondarySize.height)
+
+            primaryTexture = primaryST
+            secondaryTexture = secondaryST
+            this.primarySrcW = primarySize.width
+            this.primarySrcH = primarySize.height
+            this.secondarySrcW = secondarySize.width
+            this.secondarySrcH = secondarySize.height
+            this.primarySensorDeg = primarySensorDeg
+            this.primaryIsFront = primaryIsFront
+            this.secondarySensorDeg = secondarySensorDeg
+            this.secondaryIsFront = secondaryIsFront
+            this.displayDeg = displayDeg
+            this.scene = scene
+            standaloneSwapped = false
+
+            // Report the secondary's displayed aspect (native w/h; rotation is aspect-preserving) so
+            // the UI can size the PiP box to the source. Matches provideSecondarySurface.
+            val aspect = if (secondarySrcH > 0) secondarySrcW.toFloat() / secondarySrcH else 1f
+            onSecondaryAspect?.invoke(aspect)
+
+            standalonePreview = null
+            standaloneOutputs.clear()
+            // Attach standalone's preview output to the on-screen Surface SYNCHRONOUSLY (we're already
+            // on the GL thread). It must be in standaloneOutputs before the first onPrimaryFrame so the
+            // composite renders to the on-screen preview from frame one (a deferred attach left the
+            // preview unattached → frozen). The explicit unregister-then-register (defect A)
+            // deterministically frees the renderer's OWN kept-alive EGL window surface for this exact
+            // Surface before the first standalone render lazily recreates it — making back-main and
+            // front/tele entries behave identically.
+            firstStandaloneComposite = true
+            if (preview != null) {
+                // REUSE the renderer's kept-alive EGL window surface for this exact preview Surface
+                // (single mode keeps it alive across the switch). registerOutputSurface is idempotent
+                // (a no-op when already registered), so we do NOT unregister first: destroying and
+                // recreating the EGL window surface races the on-screen BufferQueue and throws
+                // EGL_BAD_ALLOC (the renderer's EGL surface is the SOLE producer in both modes —
+                // CameraX routes frames through the processor, it never produces to the preview
+                // directly). Reusing it gives a live composite preview from the first frame, no recreate.
+                renderer.registerOutputSurface(preview)
+                standaloneOutputs.add(preview)
+                standalonePreview = preview
+            }
+            // The encoder is MODE-AGNOSTIC: it is owned solely by [encoderSurface]/[setEncoderSurface]
+            // and is NOT tracked in standaloneOutputs. We're already on the GL thread, so inline the
+            // setEncoderSurface logic here (re-registering only if it changed) so the SAME encoder
+            // stays registered across single<->dual transitions. stopStandalone must never unregister
+            // it; that's setEncoderSurface's job.
+            if (encoder !== encoderSurface) {
+                encoderSurface?.let { renderer.unregisterOutputSurface(it) }
+                encoderSurface = encoder
+                encoder?.let { renderer.registerOutputSurface(it) }
+            }
+
+            standalone = true
+            // Standalone now owns rendering; the single->dual transition is over.
+            enteringDual = false
+
+            primaryST.setOnFrameAvailableListener({ st -> onPrimaryFrame(st) }, glHandler)
+            secondaryST.setOnFrameAvailableListener({ st -> onSecondaryFrame(st) }, glHandler)
+
+            val primarySfc = Surface(primaryST)
+            val secondarySfc = Surface(secondaryST)
+            standalonePrimarySurface = primarySfc
+            standaloneSecondarySurface = secondarySfc
+            result = DualInputs(primarySfc, secondarySfc)
+        }
+        return result!!
+    }
+
+    /** Swap the standalone preview target (null = drop preview, encoder-only). On the GL thread. */
+    fun setStandalonePreview(surface: Surface?) {
+        if (isReleaseRequested.get()) return
+        executeSafely({
+            if (!standalone) return@executeSafely
+            val previous = standalonePreview
+            if (previous === surface) return@executeSafely
+            if (previous != null) {
+                standaloneOutputs.remove(previous)
+                renderer.unregisterOutputSurface(previous)
+            }
+            standalonePreview = surface
+            if (surface != null) {
+                renderer.registerOutputSurface(surface)
+                standaloneOutputs.add(surface)
+            }
+        })
+    }
+
+    /** Leave standalone-dual mode: release both input textures + their Surfaces, drop all standalone
+     *  outputs. On the GL thread. The CameraX path becomes active again. */
+    fun stopStandalone() {
+        if (isReleaseRequested.get()) return
+        executeSafely({
+            // Stop compositing to the standalone outputs, but DO NOT unregister the preview Surface
+            // from the renderer: that would destroy its kept-alive EGL window surface, and single
+            // mode's onFrameAvailable would then have to recreate one on the same on-screen
+            // BufferQueue — racing it and throwing EGL_BAD_ALLOC (the mirror of the dual-entry bug).
+            // The renderer's preview EGL surface is the SOLE producer in both modes, so we keep it
+            // alive across single<->dual and let whichever path is active reuse it. (The encoder is
+            // mode-agnostic, owned by encoderSurface/setEncoderSurface, and likewise stays registered.)
+            standaloneOutputs.clear()
+            standalonePreview = null
+            primaryTexture?.let { st ->
+                st.setOnFrameAvailableListener(null)
+                st.release()
+            }
+            standalonePrimarySurface?.release()
+            secondaryTexture?.let { st ->
+                st.setOnFrameAvailableListener(null)
+                st.release()
+            }
+            standaloneSecondarySurface?.release()
+            primaryTexture = null
+            secondaryTexture = null
+            standalonePrimarySurface = null
+            standaloneSecondarySurface = null
+            standalone = false
+        })
+    }
+
+    /** Standalone PRIMARY frame: refresh the texture, then composite to every standalone output. */
+    private fun onPrimaryFrame(st: SurfaceTexture) {
+        if (isReleaseRequested.get() || !standalone) return
+        try {
+            st.updateTexImage()
+            st.getTransformMatrix(primaryRawTransform)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "standalone primary updateTexImage failed (producer torn down?)", e)
+            return
+        }
+        val ts = st.timestamp
+        if (firstStandaloneComposite) {
+            firstStandaloneComposite = false
+            Log.i(TAG, "standalone first composite (outputs=${standaloneOutputs.size}, encoder=${encoderSurface != null})")
+        }
+        for (surface in standaloneOutputs) {
+            try {
+                renderer.renderScene(ts, buildLayersStandalone(surface), surface)
+            } catch (e: RuntimeException) {
+                Log.e(TAG, "standalone composite failed", e)
+            }
+        }
+        // The encoder lives outside standaloneOutputs (mode-agnostic; owned by encoderSurface), so
+        // render the composite to it explicitly when streaming in dual.
+        encoderSurface?.let { enc ->
+            try {
+                renderer.renderScene(ts, buildLayersStandalone(enc), enc)
+            } catch (e: RuntimeException) {
+                Log.e(TAG, "standalone encoder render failed", e)
+            }
+        }
+    }
+
+    /** Standalone SECONDARY frame: refresh the texture only; the PRIMARY frame drives the composite. */
+    private fun onSecondaryFrame(st: SurfaceTexture) {
+        if (isReleaseRequested.get() || !standalone) return
+        try {
+            st.updateTexImage()
+            st.getTransformMatrix(secondaryRawTransform)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "standalone secondary updateTexImage failed (producer torn down?)", e)
+        }
+    }
+
+    /** A composite input source bound to one GL texture: the slot the scene maps PRIMARY/SECONDARY to. */
+    private class Slot(
+        val textureName: Int,
+        val rawTransform: FloatArray,
+        val sensorDeg: Int,
+        val isFront: Boolean,
+        val srcW: Int,
+        val srcH: Int,
+    )
+
+    private fun slotA() = Slot(
+        renderer.textureName, primaryRawTransform, primarySensorDeg, primaryIsFront, primarySrcW, primarySrcH,
+    )
+
+    private fun slotB() = Slot(
+        renderer.textureName2, secondaryRawTransform, secondarySensorDeg, secondaryIsFront, secondarySrcW, secondarySrcH,
+    )
+
+    /**
+     * Map the current [scene] to GL layers for [surface] in standalone mode. Unlike [buildLayers],
+     * the PRIMARY (big) source is oriented exactly like the SECONDARY (PiP) — DisplayTransform composed
+     * with its raw SurfaceTexture transform — because neither source flows through CameraX's transform
+     * here. Scene sources map to input slots by [standaloneSwapped]: when false PRIMARY→slotA(texture)
+     * / SECONDARY→slotB(texture2); when true they swap. Either way the big layer is full-frame with
+     * square corners and the PiP layer gets [PIP_CORNER_RADIUS]; each layer mirrors iff its mapped
+     * slot is the front camera (preserves the front-PiP-mirror behavior under swap).
+     */
+    private fun buildLayersStandalone(surface: Surface): List<GlRenderer.RenderLayer> {
+        val dt = com.example.plohoystream.camera.scene.DisplayTransform
+        val outAspect = renderer.outputAspect(surface)
+        val swapped = standaloneSwapped
+        val primarySlot = if (swapped) slotB() else slotA()
+        val secondarySlot = if (swapped) slotA() else slotB()
+        fun build(slot: Slot, layer: com.example.plohoystream.camera.scene.SceneLayer, isPip: Boolean):
+            GlRenderer.RenderLayer {
+            val contentAspect = if (slot.srcH > 0) slot.srcW.toFloat() / slot.srcH else 1f
+            val rectAspect = (layer.rect.width * outAspect) / layer.rect.height
+            val (cropX, cropY) = dt.coverCrop(contentAspect, rectAspect)
+            val orient = dt.matrix(slot.sensorDeg, displayDeg, slot.isFront, cropX, cropY)
+            val tex = FloatArray(16)
+            android.opengl.Matrix.multiplyMM(tex, 0, orient, 0, slot.rawTransform, 0)
+            return GlRenderer.RenderLayer(
+                slot.textureName, tex,
+                layer.rect.left, layer.rect.top, layer.rect.right, layer.rect.bottom,
+                cornerRadius = if (isPip) PIP_CORNER_RADIUS else 0f,
+                mirror = slot.isFront,
+            )
+        }
+        return scene.ordered().mapNotNull { layer ->
+            when (layer.source) {
+                com.example.plohoystream.camera.scene.SourceId.PRIMARY -> build(primarySlot, layer, isPip = false)
+                com.example.plohoystream.camera.scene.SourceId.SECONDARY -> build(secondarySlot, layer, isPip = true)
+            }
+        }
+    }
+
+    /**
+     * Instant camera swap (standalone only): set whether the scene's PRIMARY/SECONDARY map to the
+     * swapped input slots. After the flag flips, re-report the aspect of whichever slot is now in the
+     * PiP (SECONDARY) so the UI re-sizes the PiP box. On the GL thread. No-op outside standalone.
+     */
+    fun setStandaloneSwapped(swapped: Boolean) {
+        if (isReleaseRequested.get()) return
+        executeSafely({
+            if (!standalone) return@executeSafely
+            standaloneSwapped = swapped
+            // The PiP shows slotA when swapped (PRIMARY→slotB, SECONDARY→slotA), else slotB.
+            val pip = if (swapped) slotA() else slotB()
+            val aspect = if (pip.srcH > 0) pip.srcW.toFloat() / pip.srcH else 1f
+            onSecondaryAspect?.invoke(aspect)
+        })
+    }
+
+    /**
+     * Update the BACK camera's sensor orientation + facing after a [DualCameraSession.switchBack],
+     * writing it into the slot the back occupies: slotA (primary fields) when [inSlotA] is true,
+     * otherwise slotB (secondary fields). On the GL thread. No-op outside standalone.
+     */
+    fun setStandaloneBackOrientation(sensorDeg: Int, isFront: Boolean, inSlotA: Boolean) {
+        if (isReleaseRequested.get()) return
+        executeSafely({
+            if (!standalone) return@executeSafely
+            if (inSlotA) {
+                primarySensorDeg = sensorDeg
+                primaryIsFront = isFront
+            } else {
+                secondarySensorDeg = sensorDeg
+                secondaryIsFront = isFront
+            }
+        })
+    }
+
+    // endregion
+
     /** Releases the processor and the GL thread. Idempotent. */
     fun release() {
         if (isReleaseRequested.getAndSet(true)) return
@@ -265,7 +764,32 @@ class EgressSurfaceProcessor : SurfaceProcessor {
                 output.close()
             }
             outputSurfaces.clear()
+            // Unregister the mode-agnostic encoder once (renderer.release() below also tears down all
+            // GL window surfaces, but unregistering keeps the bookkeeping balanced).
+            encoderSurface?.let { renderer.unregisterOutputSurface(it) }
             encoderSurface = null
+            // Standalone-dual teardown: unregister the direct outputs and release the input textures
+            // + their Surfaces (these never go through inputSurfaceCount / the CameraX provideSurface
+            // release callbacks, so they must be cleaned up here).
+            for (surface in standaloneOutputs) {
+                renderer.unregisterOutputSurface(surface)
+            }
+            standaloneOutputs.clear()
+            standalonePreview = null
+            primaryTexture?.let { st ->
+                st.setOnFrameAvailableListener(null)
+                st.release()
+            }
+            standalonePrimarySurface?.release()
+            secondaryTexture?.let { st ->
+                st.setOnFrameAvailableListener(null)
+                st.release()
+            }
+            standaloneSecondarySurface?.release()
+            primaryTexture = null
+            secondaryTexture = null
+            standalonePrimarySurface = null
+            standaloneSecondarySurface = null
             renderer.release()
             glThread.quit()
         }

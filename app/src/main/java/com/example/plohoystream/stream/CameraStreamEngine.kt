@@ -26,6 +26,11 @@ class CameraStreamEngine(
     // record (4th arg) = whether this go-live should also record locally (Settings.recordWhileStreaming).
     private val startMedia: (RtmpStreamer, VideoFormat, VideoQuality, Boolean) -> Unit,
     private val stopMedia: () -> Unit,
+    // Session lifecycle (once per go-live / full stop), invoked from the foreground start()/stop().
+    // The foreground service must start here — NOT in startMedia, which re-runs on every reconnect
+    // attempt and would call startForegroundService() from the background (Android 12+ crash).
+    private val onLive: () -> Unit = {},
+    private val onStopped: () -> Unit = {},
     // Applies an ABR-chosen encoder bitrate (bps) at runtime. No-op by default (RTMP / tests).
     private val applyBitrate: (Int) -> Unit = {},
     private val pollIntervalMs: Long = 250,
@@ -100,6 +105,7 @@ class CameraStreamEngine(
         )
 
         userWantsLive = true
+        onLive()   // foreground-safe: start() is the user's go-live tap. Survives reconnects.
         val quality = config.quality
         val requested = resolveRequest(
             config.codecOverride, hevcEncoder, hevcMain10, cameraHdr, config.hdrEnabled,
@@ -112,6 +118,7 @@ class CameraStreamEngine(
             // stop() cancels this job (interrupting the backoff delay) and tears down itself.
             while (userWantsLive) {
                 mediaStarted = false
+                android.util.Log.i("CameraStreamEngine", "state -> Connecting")
                 _state.value = StreamState.Connecting
                 val s = streamerFactory(scheme).also { streamer = it }
                 s.start(endpoint, requested.codec, width, height, fps, sampleRate, abr)
@@ -132,6 +139,7 @@ class CameraStreamEngine(
                     Outcome.Rejected -> { userWantsLive = false; _state.value = StreamState.Error("Stream rejected") }
                     Outcome.Dropped -> {
                         if (!userWantsLive) break
+                        android.util.Log.i("CameraStreamEngine", "state -> Reconnecting (connection to OBS dropped)")
                         _state.value = StreamState.Reconnecting
                         delay(reconnectDelayMs)      // cancellable: stop() aborts the wait
                     }
@@ -156,6 +164,7 @@ class CameraStreamEngine(
                         startMedia(s, actual, quality, record)
                         _activeHdr.value = actual.dynamicRange == DynamicRange.HLG10
                     }
+                    if (_state.value != StreamState.Live) android.util.Log.i("CameraStreamEngine", "state -> Live")
                     _state.value = StreamState.Live
                     val kbps = bitrateMeter.update(s.bytesSent(), System.currentTimeMillis())
                     _bitrateKbps.value = kbps
@@ -196,6 +205,7 @@ class CameraStreamEngine(
         _health.value = ConnectionHealth.Good
         _audioLevel.value = 0f
         streamer?.stop(); streamer = null
+        onStopped()   // release the foreground service for the whole session (not per reconnect)
         _state.value = StreamState.Idle
     }
 

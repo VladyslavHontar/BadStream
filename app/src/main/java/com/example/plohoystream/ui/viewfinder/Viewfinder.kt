@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -85,6 +86,11 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val selectedLensFlow = remember(controller) {
         (controller as? CameraXController)?.selectedPhysicalId ?: MutableStateFlow<String?>(null)
     }
+    // The back sensor bound as the dual back source (drives the active-chip highlight in dual).
+    val dualBackLensIdFlow = remember(controller) {
+        (controller as? CameraXController)?.dualBackLensId ?: MutableStateFlow<String?>(null)
+    }
+    val dualBackLensId by dualBackLensIdFlow.collectAsStateWithLifecycle()
     // Manual exposure (shutter for motion blur + ISO). Panel toggled by a button over the preview.
     val exposureFlow = remember(controller) {
         (controller as? CameraXController)?.exposure
@@ -92,6 +98,23 @@ fun Viewfinder(viewModel: StreamViewModel) {
     }
     val exposure by exposureFlow.collectAsStateWithLifecycle()
     var exposureOpen by remember { mutableStateOf(false) }
+    // Secondary (PiP) camera's displayed aspect, so the PiP box can match the source (no crop).
+    val pipAspectFlow = remember(controller) {
+        (controller as? CameraXController)?.secondaryPipAspect ?: MutableStateFlow(1f)
+    }
+    val pipAspect by pipAspectFlow.collectAsStateWithLifecycle()
+    var scene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.SINGLE) }
+    val dualOn = scene.isDual
+    // Set when an UNAVAILABLE lens chip is tapped in dual: the controller's onExitDualRequested hands
+    // the LensOption here, which drives the "drop the PiP and switch?" confirm dialog below.
+    var exitDualChip by remember { mutableStateOf<com.example.plohoystream.camera.LensOption?>(null) }
+    // Which facing is the PRIMARY (big) view in dual. Tracked SEPARATELY from [facing] so a dual swap
+    // can flip it WITHOUT changing [facing] (which would recompute [config] and re-run the binding
+    // LaunchedEffect → a full dual reopen). The swap is instant (relabel only) via cx.dualSwap.
+    var dualPrimary by remember { mutableStateOf(Facing.BACK) }
+    // Remember the dual layout so toggling dual off then on restores the user's PiP position/size
+    // rather than snapping back to the default corner.
+    var lastDualScene by remember { mutableStateOf(com.example.plohoystream.camera.scene.Scene.dual()) }
     val selectedPhysicalId by selectedLensFlow.collectAsStateWithLifecycle()
     var zoomVisible by remember { mutableStateOf(false) }
     var zoomNonce by remember { mutableStateOf(0) }
@@ -104,7 +127,8 @@ fun Viewfinder(viewModel: StreamViewModel) {
     }
     fun applyZoom(target: Float) {
         zoom = target.coerceIn(zoomRange.start, zoomRange.endInclusive)
-        controller.setZoom(zoom)
+        val cx = controller as? CameraXController
+        if (dualOn && cx != null) cx.dualSetZoom(zoom) else controller.setZoom(zoom)
         zoomNonce++
     }
 
@@ -149,18 +173,62 @@ fun Viewfinder(viewModel: StreamViewModel) {
         }.onFailure { android.util.Log.w("Viewfinder", "concurrent-camera probe failed", it) }
     }
 
+    // Tap-to-exit-dual: an UNAVAILABLE chip tap routes through dualSelectChip → onExitDualRequested,
+    // which surfaces the LensOption for the confirm dialog. Registered once on the controller.
+    LaunchedEffect(controller) {
+        (controller as? CameraXController)?.onExitDualRequested = { lens -> exitDualChip = lens }
+    }
+
     val config = remember(cameras, facing, ui.settings.quality.fps) {
         CameraCapabilities.select(cameras, facing, ui.settings.quality.fps)
     }
 
-    LaunchedEffect(config, surface, encoderSurface, activeHdr) {
+    // Single source of truth for (re)binding the camera. Keyed on dualOn so toggling dual mode
+    // rebinds here — the toggle only flips dualOn, never binds directly (two binders would race and
+    // clobber each other). In dual mode bind front+back concurrently; otherwise the single camera.
+    LaunchedEffect(config, surface, encoderSurface, activeHdr, dualOn) {
         val c = config ?: return@LaunchedEffect
         val targets = CameraTargets.select(surface, encoderSurface)
         if (targets.isEmpty()) {
             controller.stop()           // idle + no preview (e.g. backgrounded while not live)
         } else {
-            controller.start(c, targets, hdr = activeHdr)
-            controller.setZoom(zoom)
+            val cx = controller as? CameraXController
+            if (dualOn && cx != null) {
+                // Dual ON: open both cameras via DualCameraSession. preview = the on-screen surface;
+                // encoder = the non-preview target. primaryFacing is [dualPrimary] (NOT [facing]) so a
+                // swap can flip the big view without re-running this binder.
+                val previewTarget = surface
+                val encoderTarget = targets.firstOrNull { it !== previewTarget }
+                cx.enterDual(
+                    primaryFacing = dualPrimary,
+                    scene = scene,
+                    preview = previewTarget,
+                    encoder = encoderTarget,
+                    onFailed = { scene = com.example.plohoystream.camera.scene.Scene.SINGLE },
+                )
+            } else {
+                // Dual OFF (or no CameraXController): tear down any dual session first, then bind single.
+                cx?.exitDual()
+                controller.start(c, targets, hdr = activeHdr)
+                controller.setZoom(zoom)
+            }
+        }
+    }
+
+    // Live PiP edits (drag/resize): push the scene to the GL pipeline without rebinding cameras.
+    LaunchedEffect(scene) {
+        val cx = controller as? CameraXController ?: return@LaunchedEffect
+        if (scene.isDual) cx.setScene(scene)
+    }
+
+    // Size the PiP box to the secondary camera's source aspect (no cropping). Fires when the source
+    // aspect resolves (bind/swap) or dual turns on — not on every drag, so it never fights gestures.
+    // regionAspect is the GL output (16:9 camera surface) the composite renders into.
+    LaunchedEffect(pipAspect, dualOn, config) {
+        if (!dualOn || pipAspect <= 0f) return@LaunchedEffect   // 0f = sentinel before the source aspect resolves
+        val region = config?.let { it.previewSize.width.toFloat() / it.previewSize.height } ?: (16f / 9f)
+        scene = scene.updateLayer(com.example.plohoystream.camera.scene.SourceId.SECONDARY) {
+            com.example.plohoystream.camera.scene.SceneEdits.setAspect(it, region, pipAspect)
         }
     }
 
@@ -173,6 +241,10 @@ fun Viewfinder(viewModel: StreamViewModel) {
     val currentEncoder by rememberUpdatedState(encoderSurface)
     val currentHdr by rememberUpdatedState(activeHdr)
     val currentZoom by rememberUpdatedState(zoom)
+    val currentDualOn by rememberUpdatedState(dualOn)
+    val currentFacing by rememberUpdatedState(facing)
+    val currentDualPrimary by rememberUpdatedState(dualPrimary)
+    val currentScene by rememberUpdatedState(scene)
     var resumed by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -183,8 +255,23 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     val c = currentConfig
                     val targets = CameraTargets.select(currentSurface, currentEncoder)
                     if (c != null && targets.isNotEmpty()) {
-                        controller.start(c, targets, hdr = currentHdr)
-                        controller.setZoom(currentZoom)
+                        val cx = controller as? CameraXController
+                        if (currentDualOn && cx != null) {
+                            // Resume in dual: re-enter the standalone dual session (it stops itself
+                            // first if already started). primaryFacing tracks the dual swap state.
+                            val previewTarget = currentSurface
+                            val encoderTarget = targets.firstOrNull { it !== previewTarget }
+                            cx.enterDual(
+                                primaryFacing = currentDualPrimary,
+                                scene = currentScene,
+                                preview = previewTarget,
+                                encoder = encoderTarget,
+                                onFailed = {},
+                            )
+                        } else {
+                            controller.start(c, targets, hdr = currentHdr)
+                            controller.setZoom(currentZoom)
+                        }
                     }
                 }
                 Lifecycle.Event.ON_PAUSE -> resumed = false
@@ -203,17 +290,24 @@ fun Viewfinder(viewModel: StreamViewModel) {
 
     DisposableEffect(Unit) {
         onDispose {
+            val cx = controller as? CameraXController
             // Preview is going away: null the controller's preview surface so the CameraX backend
             // enters encoder-only (backgrounded) mode correctly — the encoder target is no longer
             // misclassified as the preview.
-            (controller as? CameraXController)?.setPreviewSurface(null)
-            // Detach preview only. If streaming, the camera must keep feeding the encoder, so
-            // reconfigure to whatever targets remain (encoder-only) rather than stopping. If
-            // idle (no encoder surface), stop the camera.
+            cx?.setPreviewSurface(null)
             val enc = encoderSurface
             val targets = CameraTargets.select<Surface>(null, enc)
-            if (targets.isEmpty()) controller.stop()
-            else config?.let { controller.start(it, targets, hdr = activeHdr) }
+            if (currentDualOn && cx != null) {
+                // In dual: drop the preview from the compositor but keep both cameras feeding the
+                // encoder if streaming; if idle (no encoder), tear the dual session down.
+                if (targets.isEmpty()) cx.exitDual() else cx.setDualPreview(null)
+            } else {
+                // Detach preview only. If streaming, the camera must keep feeding the encoder, so
+                // reconfigure to whatever targets remain (encoder-only) rather than stopping. If
+                // idle (no encoder surface), stop the camera.
+                if (targets.isEmpty()) controller.stop()
+                else config?.let { controller.start(it, targets, hdr = activeHdr) }
+            }
         }
     }
 
@@ -240,14 +334,26 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     .weight(1f)
                     .fillMaxHeight()
                     // Pinch-to-zoom: scale the current ratio by the gesture; applyZoom clamps to
-                    // CameraX's real range and reveals the slider.
-                    .pointerInput(zoomRange) {
+                    // CameraX's real range and reveals the slider. Keyed on dualOn too: applyZoom
+                    // routes to the dual (Camera2) vs single (CameraX) zoom path by the captured
+                    // dualOn, so the handler must relaunch when dual toggles (zoomRange alone can stay
+                    // unchanged across the toggle) — otherwise the pinch keeps calling the stale
+                    // single-mode path on the unbound CameraX camera and the video never zooms in dual.
+                    .pointerInput(zoomRange, dualOn) {
                         detectTransformGestures { _, _, zoomChange, _ -> applyZoom(zoom * zoomChange) }
                     }
-                    // Single tap reveals the zoom slider for a few seconds (bumping the nonce
-                    // restarts the auto-hide timer) without changing zoom.
+                    // Single tap reveals the zoom slider; double tap flips front/back (single mode).
+                    // In dual mode the camera swap is a tap on the PiP instead (see PipOverlay).
                     .pointerInput(Unit) {
-                        detectTapGestures { zoomNonce++ }
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (!currentDualOn) {
+                                    (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
+                                    facing = CameraControls.opposite(currentFacing); zoom = 1f
+                                }
+                            },
+                            onTap = { zoomNonce++ },
+                        )
                     },
             ) {
                 CameraPreview(
@@ -311,6 +417,32 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             .width(300.dp),
                     )
                 }
+                if (dualOn) {
+                    // Lay the overlay over the SAME letterboxed camera region the preview shows (and the
+                    // GL composite renders into), so the PiP border lines up with the rendered PiP.
+                    androidx.compose.foundation.layout.Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        PipOverlay(
+                            scene = scene,
+                            onSceneChange = { scene = it },
+                            onSwap = {
+                                // INSTANT swap (no device/session reopen): flip which open camera is the
+                                // big (primary) view. We flip the dedicated [dualPrimary] state — NOT
+                                // [facing] — so the binding LaunchedEffect (keyed on config←facing) does
+                                // not re-run and tear the dual session down. dualSwap just relabels the
+                                // processor's slot mapping; both textures already stream.
+                                val newPrimary = CameraControls.opposite(dualPrimary)
+                                dualPrimary = newPrimary
+                                (controller as? CameraXController)?.dualSwap(newPrimary)
+                            },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .aspectRatio(previewAspect),
+                        )
+                    }
+                }
             }
             Box(modifier = Modifier.width(rightWidth).fillMaxHeight()) {
                 AnimatedContent(
@@ -340,13 +472,24 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             canGoLive = ui.canGoLive,
                             errorReason = (ui.stream as? StreamState.Error)?.reason,
                             onSelectLens = { lens ->
-                                (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
-                                zoom = 1f
-                                (controller as? CameraXController)?.selectLens(lens.physicalId)
-                            },
-                            onFlip = {
-                                (controller as? CameraXController)?.beginCameraTransition()  // stream freeze-blur
-                                facing = CameraControls.opposite(facing); zoom = 1f
+                                val cx = controller as? CameraXController
+                                if (dualOn && cx != null) {
+                                    // Dual: a chip is honored ONLY if its sensor runs concurrently with
+                                    // the front (REAL → switchBack to its native FOV). Every other chip
+                                    // is UNAVAILABLE and offers to drop the PiP — no silent digital zoom.
+                                    // REAL resets [zoom] to 1× (the new sensor's native FOV); UNAVAILABLE
+                                    // leaves zoom untouched (the tap only opens the exit-dual offer, which
+                                    // can be cancelled, so it must not change zoom).
+                                    when (cx.classifyDualChip(lens)) {
+                                        com.example.plohoystream.camera.DualClass.REAL -> zoom = 1f
+                                        else -> {}
+                                    }
+                                    cx.dualSelectChip(lens)
+                                } else {
+                                    cx?.beginCameraTransition()  // stream freeze-blur
+                                    zoom = 1f
+                                    cx?.selectLens(lens.physicalId)
+                                }
                             },
                             onGoLive = viewModel::goLive,
                             onStop = viewModel::stop,
@@ -355,11 +498,71 @@ fun Viewfinder(viewModel: StreamViewModel) {
                             obsScenes = ui.obsScenes,
                             obsCurrentScene = ui.obsCurrentScene,
                             onSwitchScene = viewModel::obsSwitchScene,
+                            dualSupported = dualSupported,
+                            dualOn = dualOn,
+                            // Dual: classify each chip per device caps so the rail dims UNAVAILABLE
+                            // chips (only a REAL concurrent sensor is usable); single mode passes null
+                            // to keep current behavior. dualActiveId highlights the bound back sensor.
+                            dualClassOf = if (dualOn) {
+                                { lens -> (controller as? CameraXController)?.classifyDualChip(lens)
+                                    ?: com.example.plohoystream.camera.DualClass.REAL }
+                            } else null,
+                            dualActiveId = if (dualOn) dualBackLensId else null,
+                            // Only flip the flag; the binding LaunchedEffect (keyed on dualOn) does the
+                            // actual (re)bind, so there's a single binder and no race with start().
+                            onToggleDual = {
+                                scene = if (scene.isDual) {
+                                    lastDualScene = scene                       // preserve PiP layout
+                                    com.example.plohoystream.camera.scene.Scene.SINGLE
+                                } else {
+                                    // Turning dual ON: keep whichever camera is the current single main
+                                    // frame as the dual PRIMARY (big view) so the OTHER goes to the PiP.
+                                    // [dualPrimary] is never synced to [facing] elsewhere, so without
+                                    // this, entering dual while on FRONT would wrongly keep BACK primary
+                                    // and put FRONT in the PiP. The binding LaunchedEffect reads
+                                    // [dualPrimary] for enterDual(primaryFacing = ...).
+                                    dualPrimary = facing
+                                    lastDualScene
+                                }
+                            },
                             modifier = Modifier.fillMaxSize().padding(12.dp),
                         )
                     }
                 }
             }
+        }
+
+        // Tap-to-exit-dual confirm: an UNAVAILABLE lens chip can't run alongside the PiP, so offer to
+        // drop the PiP and switch the single camera to it. Confirm flips the scene to SINGLE (same
+        // path the dual toggle uses, so the single binder rebinds) and selects the chip's lens.
+        exitDualChip?.let { lens ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { exitDualChip = null },
+                title = { androidx.compose.material3.Text("Switch to ${lens.label}?") },
+                text = {
+                    androidx.compose.material3.Text(
+                        "${lens.label} can't run with the PiP — drop the PiP and switch the single camera to it?"
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        val cx = controller as? CameraXController
+                        cx?.exitDual()
+                        cx?.selectLens(lens.physicalId)
+                        // Flip the scene to SINGLE (the dual toggle's path) so dualOn goes false and the
+                        // single binder rebinds.
+                        if (scene.isDual) lastDualScene = scene
+                        scene = com.example.plohoystream.camera.scene.Scene.SINGLE
+                        zoom = 1f
+                        exitDualChip = null
+                    }) { androidx.compose.material3.Text("Switch") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { exitDualChip = null }) {
+                        androidx.compose.material3.Text("Cancel")
+                    }
+                },
+            )
         }
     }
 }

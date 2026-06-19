@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 class ObsWebSocketController(
     private val streamState: StateFlow<StreamState>,
+    private val health: StateFlow<com.example.plohoystream.stream.ConnectionHealth>,
     private val settings: Flow<Settings>,
     private val clientFactory: () -> OkHttpClient = {
         OkHttpClient.Builder().pingInterval(10, TimeUnit.SECONDS).build()
@@ -85,18 +86,23 @@ class ObsWebSocketController(
                 }
             }
         }
-        // BRB auto-switch collector
+        // BRB auto-switch: re-evaluate continuously off stream state + health (Moblin-style), not just
+        // on a one-shot state change, so it engages whenever the link drops and recovers.
         scope.launch {
-            streamState.collect { st ->
+            kotlinx.coroutines.flow.combine(streamState, health) { st, h -> st to h }.collect { (st, h) ->
                 val cfg = latestSettings
+                val broken = st is StreamState.Reconnecting ||
+                    (st is StreamState.Live && h == com.example.plohoystream.stream.ConnectionHealth.Bad)
+                val working = st is StreamState.Live && h != com.example.plohoystream.stream.ConnectionHealth.Bad
                 BrbSwitch.decide(
-                    state = st,
+                    broken = broken,
+                    working = working,
                     autoEnabled = cfg.obsAutoSwitchEnabled,
                     connected = _connected.value,
                     currentScene = _currentScene.value,
                     mainScene = cfg.obsMainSceneName,
                     brbScene = cfg.obsBrbSceneName,
-                )?.let { targetScene -> switchScene(targetScene) }
+                )?.let { switchScene(it) }
             }
         }
     }

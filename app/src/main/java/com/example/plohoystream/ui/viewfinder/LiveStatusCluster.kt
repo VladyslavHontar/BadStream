@@ -43,22 +43,23 @@ fun LiveStatusCluster(live: Boolean, elapsed: String, reconnecting: Boolean = fa
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .background(GlassOverVideo)
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
             ) {
                 Box(
-                    modifier = Modifier.size(8.dp).clip(CircleShape)
+                    modifier = Modifier.size(7.dp).clip(CircleShape)
                         .background(if (reconnecting) com.example.plohoystream.ui.theme.HealthWarn else LiveRed)
                         .alpha(pulse),
                 )
                 Text(
                     if (reconnecting) "RECONNECTING" else "LIVE",
                     color = OnSurfaceWhite, fontWeight = FontWeight.SemiBold,
+                    style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
                 )
             }
         }
-        Text(elapsed, color = OnSurfaceWhite, style = androidx.compose.material3.MaterialTheme.typography.displayLarge)
+        Text(elapsed, color = OnSurfaceWhite, style = androidx.compose.material3.MaterialTheme.typography.displaySmall)
     }
 }
 

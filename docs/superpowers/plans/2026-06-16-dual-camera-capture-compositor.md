@@ -64,7 +64,8 @@ Add this method to `CameraXController` (it does NOT touch the existing `start`/`
             val secondaryCfg = singleConfig(secondaryFacing, Size(640, 360), primary = false)
             registry.currentState = Lifecycle.State.STARTED
             try {
-                provider.bindToConcurrentCamera(listOf(primaryCfg, secondaryCfg))
+                // camera 1.6.1: concurrent binding is a bindToLifecycle overload taking the config list.
+                provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))
                 Log.i(TAG, "bound dual: primary=$primaryFacing")
             } catch (e: Exception) {
                 Log.e(TAG, "concurrent bind failed; caller falls back to single", e)
@@ -91,11 +92,8 @@ Add this method to `CameraXController` (it does NOT touch the existing `start`/`
             .addEffect(effect)
             .build()
         val selector = if (facing == Facing.FRONT) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-        return androidx.camera.core.ConcurrentCamera.SingleCameraConfig.Builder()
-            .setCameraSelector(selector)
-            .setUseCaseGroup(useCaseGroup)
-            .setLifecycleOwner(this)
-            .build()
+        // camera 1.6.1: SingleCameraConfig has a public constructor (no Builder).
+        return androidx.camera.core.ConcurrentCamera.SingleCameraConfig(selector, useCaseGroup, this)
     }
 ```
 
@@ -477,6 +475,43 @@ Confirm the PiP inset is correctly placed and oriented (not mirrored/upside down
 - [ ] **Step 3: Record result**
 
 Note pass/fail per check. If all pass, dual capture + fixed-PiP compositing works; proceed to Plan 3 (draggable/size/swap PiP using `PipLayout`). Finish the branch via superpowers:finishing-a-development-branch.
+
+## Spike result (Seeker, 2026-06-16)
+
+Task 1 GATE **PASSED**. Observed logs after `startDual(primary=BACK)`:
+
+```
+CameraXController: bound dual: primary=BACK
+EgressSurfaceProcessor: onInputSurface #2 res=960x720
+EgressSurfaceProcessor: onInputSurface #3 res=320x240
+```
+
+- `provider.bindToLifecycle(listOf(primaryCfg, secondaryCfg))` **accepts the `CameraEffect`/`SurfaceProcessor`** and binds both cameras — no exception, no crash, process alive.
+- **Two inputs delivered**, and the PRIMARY preview rendered on-screen (BACK camera).
+- **Resolution note:** the device overrode the requested 1280×720 / 640×360 to its concurrent-supported **960×720 / 320×240** (4:3). The "larger area = primary" routing in Task 3 still holds (960×720 ≫ 320×240) and matches bind order (primary bound first → input #2 first). Tasks 2–3 proceed; the PiP composite uses normalized coords so the 4:3 aspect is handled by the output surface.
+
+Proceed to Task 2.
+
+## Task 5 verification result (Seeker, 2026-06-16)
+
+**Dual-camera PiP WORKS in the live preview.** Verified on-device:
+- ✅ Toggle appears only because the Seeker is supported (capability gate).
+- ✅ Dual ON → BACK full-frame + FRONT camera in the PiP inset (face clearly visible).
+- ✅ Toggle OFF → clean revert to single BACK camera, no PiP.
+- ✅ No crash through on/off cycles (and the earlier teardown fix guards updateTexImage).
+- ⏳ NOT yet verified: the composite in the actual encoded **stream/recording** (needs a live
+  session). It uses the same `renderComposite` path as the preview (encoder surface is rendered
+  identically), so it is expected to work — confirm on next live stream.
+
+**Two integration bugs found + fixed during verification (commits 3d21854, 181af91):**
+1. The toggle and the single-camera bind effect were two competing binders → dual bind got
+   clobbered by a single rebind. Fixed by centralizing binding in one `dualOn`-keyed effect.
+2. The secondary preview had no `SurfaceProvider`, so the front camera never streamed (black PiP).
+   Fixed by feeding the secondary camera directly into the renderer's 2nd texture via
+   `provideSecondarySurface` (no effect on the secondary).
+
+**Known polish items (for Plan 3 / follow-up):** PiP is fixed-position (Plan 3 adds drag/size/swap
+using `PipLayout`); confirm front-camera mirroring/orientation in the inset; verify the stream output.
 
 ## Risks / contingencies
 
