@@ -334,8 +334,12 @@ fun Viewfinder(viewModel: StreamViewModel) {
                     .weight(1f)
                     .fillMaxHeight()
                     // Pinch-to-zoom: scale the current ratio by the gesture; applyZoom clamps to
-                    // CameraX's real range and reveals the slider.
-                    .pointerInput(zoomRange) {
+                    // CameraX's real range and reveals the slider. Keyed on dualOn too: applyZoom
+                    // routes to the dual (Camera2) vs single (CameraX) zoom path by the captured
+                    // dualOn, so the handler must relaunch when dual toggles (zoomRange alone can stay
+                    // unchanged across the toggle) — otherwise the pinch keeps calling the stale
+                    // single-mode path on the unbound CameraX camera and the video never zooms in dual.
+                    .pointerInput(zoomRange, dualOn) {
                         detectTransformGestures { _, _, zoomChange, _ -> applyZoom(zoom * zoomChange) }
                     }
                     // Single tap reveals the zoom slider; double tap flips front/back (single mode).
