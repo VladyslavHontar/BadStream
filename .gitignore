@@ -18,3 +18,7 @@ app/src/main/cpp/build-harness/
 .superpowers/
 .idea/
 .claude/
+# Signing material — never commit
+*.keystore
+*.jks
+keystore.properties
