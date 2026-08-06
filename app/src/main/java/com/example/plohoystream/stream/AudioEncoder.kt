@@ -14,6 +14,45 @@ import kotlin.concurrent.thread
  * built natively from [sampleRate]/[channels] (RtmpClient.SendAudioConfig), so no codec-config
  * blob is forwarded here. Permission RECORD_AUDIO is gated by the UI before construction.
  */
+/**
+ * Assigns PTS to PCM buffers read from AudioRecord, on the stream timeline
+ * (ns since nanoT0 in, µs out). Each buffer is labeled with the capture time of its FIRST
+ * sample: `read()` returns after the samples were captured, so the wall clock at return is
+ * one buffer-duration late and jitters with the scheduler, while the PCM content itself is
+ * gapless. PTS therefore advances by the cumulative sample count from an anchor set at the
+ * first read; the wall clock only re-anchors the timeline when they diverge beyond
+ * [MAX_DRIFT_NS] (crystal drift on long streams, or samples lost to a recorder overrun).
+ */
+class AudioPtsClock(private val sampleRate: Int, channels: Int) {
+    private val bytesPerFrame = 2 * channels
+    private var anchorNs = Long.MIN_VALUE
+    private var frames = 0L
+    private var lastPtsUs = -1L
+
+    /** @param nowNs `System.nanoTime() - nanoT0` when `read()` returned.
+     *  @param byteCount PCM16 bytes in this buffer. */
+    fun ptsUs(nowNs: Long, byteCount: Int): Long {
+        val bufFrames = byteCount / bytesPerFrame
+        val wallStartNs = nowNs - bufFrames * NS_PER_S / sampleRate
+        if (anchorNs == Long.MIN_VALUE ||
+            kotlin.math.abs(anchorNs + frames * NS_PER_S / sampleRate - wallStartNs) > MAX_DRIFT_NS
+        ) {
+            anchorNs = wallStartNs
+            frames = 0L
+        }
+        var pts = (anchorNs + frames * NS_PER_S / sampleRate) / 1_000L
+        frames += bufFrames
+        if (pts <= lastPtsUs) pts = lastPtsUs + 1   // strictly monotonic across re-anchors
+        lastPtsUs = pts
+        return pts
+    }
+
+    private companion object {
+        const val NS_PER_S = 1_000_000_000L
+        const val MAX_DRIFT_NS = 100_000_000L   // 100 ms drift budget before re-anchoring
+    }
+}
+
 class AudioEncoder(
     private val sampleRate: Int = 44100,
     private val channels: Int = 2,
@@ -37,6 +76,7 @@ class AudioEncoder(
     private var feedThread: Thread? = null
     private var drainThread: Thread? = null
     @Volatile private var lastLevelNs: Long = 0L
+    private val ptsClock = AudioPtsClock(sampleRate, channels)
 
     init {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
@@ -74,7 +114,7 @@ class AudioEncoder(
             if (idx >= 0) {
                 val ib = codec.getInputBuffer(idx) ?: continue
                 ib.clear(); ib.put(pcm, 0, read)
-                val ptsUs = (System.nanoTime() - nanoT0) / 1_000L
+                val ptsUs = ptsClock.ptsUs(System.nanoTime() - nanoT0, read)
                 codec.queueInputBuffer(idx, 0, read, ptsUs, 0)
             }
         }

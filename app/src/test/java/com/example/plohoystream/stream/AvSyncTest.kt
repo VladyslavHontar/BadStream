@@ -53,29 +53,7 @@ class AvSyncTest {
         assertTrue("ptsMs should be 33 ms, got $ptsMs", abs(ptsMs - 33L) <= 1L)
     }
 
-    // ── Audio rebase math ────────────────────────────────────────────────────
-
-    /**
-     * Audio PTS = (System.nanoTime() - nanoT0) / 1_000_000.
-     * Verify that the formula rounds to milliseconds correctly.
-     */
-    @Test fun audioRebaseMath_correctMs() {
-        val nanoT0 = 1_000_000_000_000L                 // arbitrary epoch
-        val captureNano = nanoT0 + 500_000_000L         // 500 ms after epoch
-        val ptsMs = (captureNano - nanoT0) / 1_000_000L
-        assertEquals(500L, ptsMs)
-    }
-
-    /**
-     * Sub-millisecond remainder is truncated (not rounded), which is fine for
-     * 1-ms-resolution RTMP timestamps.
-     */
-    @Test fun audioRebaseMath_truncatesSubMs() {
-        val nanoT0 = 0L
-        val captureNano = 1_999_999L                    // 1.999 ms
-        val ptsMs = (captureNano - nanoT0) / 1_000_000L
-        assertEquals(1L, ptsMs)
-    }
+    // Audio PTS assignment is covered by AudioPtsClockTest (sample-count clock).
 
     // ── Video rebase math ────────────────────────────────────────────────────
 

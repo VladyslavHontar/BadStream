@@ -6,6 +6,8 @@ plugins {
 
 android {
     namespace = "com.example.plohoystream"
+    // android.util.Log calls in engine code must not crash JVM unit tests.
+    testOptions.unitTests.isReturnDefaultValues = true
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
